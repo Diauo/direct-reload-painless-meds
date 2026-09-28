@@ -1,0 +1,16 @@
+{
+  "surgery": {
+    "enabled": true,
+    "keepMaxHealthPercent": 100
+  },
+  "medUseTime": {
+    "enabled": true,
+    "multiplier": 0.5,
+    "minSeconds": 0.8,
+    "surgicalKitMultiplier": null
+  },
+  "drugBuffs": {
+    "enabled": true,
+    "multiplier": 2.0
+  }
+}
