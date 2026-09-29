@@ -6,6 +6,15 @@ Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine
 
 ---
 
+## Versions & compatibility
+
+| SPT version | Mod version | Client artifact | Server artifact |
+|---|---|---|---|
+| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.1.0** | `direct-reload-41/client` | `direct-reload-41/server` |
+| **SPT 4.0.x** (EFT 0.16.9.40087) | **v1.0.2** | `direct-reload/client` | `direct-reload/server` |
+
+Both lines are maintained in this repository — pick the source directory matching your SPT version.
+
 ## Features
 
 ### Reload
@@ -23,16 +32,23 @@ Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine
 - **Drug buff durations (optional toggle):** positive effect durations ×2.
 
 ### Fika
-Fully multiplayer-safe. In Fika sessions the **host mirrors the reload fill/chambering on its own copy of your character**, keeping client and host in sync (verified on a dedicated headless setup).
+Fully multiplayer-safe. In Fika sessions the **host mirrors the reload fill/chambering on its own copy of your character**, keeping client and host in sync (verified with a dedicated headless setup on 4.0 and a local host session on 4.1).
 
 ---
 
 ## Requirements
-- **SPT 4.0.13** (EFT 0.16.9.40087)
+- **SPT 4.1.x** (EFT 0.16.9.5) → use v1.1.0 artifacts
+- **SPT 4.0.x** (EFT 0.16.9.40087) → use v1.0.2 artifacts
 - BepInEx (bundled with SPT)
 
 ## Installation
-Extract the release archive into your **SPT root** (it merges `BepInEx/` and `SPT/`):
+Extract the release archive into your **SPT root** (it merges the directory layout):
+
+**SPT 4.1.x:**
+- Client plugin: `BepInEx/plugins/RZDirectReload/RZDirectReload.dll`
+- Server mod: `SPT_Runtime/user/mods/RZDirectReload/` (dll + config.json)
+
+**SPT 4.0.x:**
 - Client plugin: `BepInEx/plugins/RZDirectReload/RZDirectReload.dll`
 - Server mod: `SPT/user/mods/RZDirectReload/` (dll + config.json)
 
@@ -49,7 +65,7 @@ Extract the release archive into your **SPT root** (it merges `BepInEx/` and `SP
 | Instant Magazine Load / Unload | on | instant mag ops |
 | Debug Logging | off | troubleshooting |
 
-**Server (`SPT/user/mods/RZDirectReload/config.json`):**
+**Server (`user/mods/RZDirectReload/config.json`):**
 - `surgery.keepMaxHealthPercent` — 100 = no penalty (default)
 - `medUseTime.multiplier` — 0.5 = half time (default), `minSeconds` floor
 - `drugBuffs.multiplier` — positive buff duration ×2 (default)
@@ -63,31 +79,46 @@ Extract the release archive into your **SPT root** (it merges `BepInEx/` and `SP
 | Detachable mag + direct-feed support (EXWIRS) | direct reload |
 | Pure internal magazine (Mosin / fixed-mag SKS) | vanilla one-by-one loading |
 
+- **SPT 4.1 note:** the 4.1 softcore reload flags the stowed magazine as temporarily known during the reload transaction, mirroring the game's own drag operations — required by the 4.1 inventory observer system (`UnknownItemError` otherwise).
+
 ---
 
 ## Building from source
 
-Requirements: **.NET SDK** (server targets `net9.0`, client targets `netstandard2.1`) and an **SPT 4.0.13 installation** to copy reference assemblies from.
+Requirements: **.NET SDK** and an **SPT installation matching your target line** to copy reference assemblies from (game/SPT binaries are not redistributed in this repository).
 
-1. Copy reference DLLs (not committed to this repository — game/SPT binaries are not redistributed here):
+### SPT 4.0.x — `direct-reload/`
+
+1. Copy reference DLLs:
    - **Client** → `direct-reload/client/libs/`:
      `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `Comfort.dll` (from `EscapeFromTarkov_Data/Managed`)
    - **Server** → `libs/` (repository root):
      `SPTarkov.Server.Core.dll`, `SPTarkov.DI.dll`, `SPTarkov.Common.dll`, `SemanticVersioning.dll` (from your SPT server installation)
-2. Build:
+2. Build: `./build.sh` (or `dotnet build -c Release` inside each project).
 
-   ```bash
-   ./build.sh
-   # or: dotnet build -c Release inside direct-reload/client and direct-reload/server
-   ```
+### SPT 4.1.x — `direct-reload-41/`
+
+1. Copy reference DLLs:
+   - **Client** → `direct-reload-41/client/libs/`:
+     `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `Comfort.dll` (from `EscapeFromTarkov_Data/Managed`), and **`hollowed.dll`** — the deobfuscated `Assembly-CSharp` contract used by all SPT 4.1 client mods:
+     ```bash
+     curl -L -o direct-reload-41/client/libs/hollowed.dll \
+       https://raw.githubusercontent.com/sp-tarkov/modules/main/project/Shared/Hollowed/hollowed.dll
+     ```
+   - **Server:** the 4.1 server project restores `SPTarkov.Server.Core` from NuGet — no manual DLL copies needed.
+
+2. Build: `./build.sh` (or `dotnet build -c Release` inside each project).
 
 Outputs:
-- Client: `direct-reload/client/bin/Release/netstandard2.1/RZDirectReload.dll`
-- Server: `direct-reload/server/bin/Release/net9.0/RZDirectReload.Server.dll`
+- 4.0 client: `direct-reload/client/bin/Release/netstandard2.1/RZDirectReload.dll`
+- 4.0 server: `direct-reload/server/bin/Release/net9.0/RZDirectReload.Server.dll`
+- 4.1 client: `direct-reload-41/client/bin/Release/netstandard2.1/RZDirectReload.dll`
+- 4.1 server: `direct-reload-41/server/bin/Release/RZDirectReload.Server/RZDirectReload.Server.dll`
 
 ## Project layout
-- `direct-reload/client/` — BepInEx client plugin (reload flow, instant mag ops, med animation sync, batch surgery)
-- `direct-reload/server/` — SPT server mod (surgery / med time / drug buff config)
+- `direct-reload/` — SPT 4.0 line (client + server)
+- `direct-reload-41/` — SPT 4.1 line (client + server)
+- `build.sh` — builds both lines
 
 ## License
 MIT — see [LICENSE](LICENSE).
