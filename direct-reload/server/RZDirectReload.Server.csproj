@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RZDirectReload.Server</AssemblyName>
     <RootNamespace>RZDirectReload.Server</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.2.0</Version>
     <LangVersion>latest</LangVersion>
     <Configurations>Debug;Release</Configurations>
     <DebugType>none</DebugType>

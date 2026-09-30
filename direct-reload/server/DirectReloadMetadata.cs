@@ -14,7 +14,7 @@ public record DirectReloadMetadata : AbstractModMetadata
     public override string Name { get; init; } = "Direct Reload & Painless Meds";
     public override string Author { get; init; } = "RZ-99";
     public override List<string>? Contributors { get; init; } = [];
-    public override Version Version { get; init; } = new("1.0.0", false);
+    public override Version Version { get; init; } = new("1.2.0", false);
     public override Range SptVersion { get; init; } = new("~4.0.13", false);
     public override List<string>? Incompatibilities { get; init; } = [];
     public override Dictionary<string, Range>? ModDependencies { get; init; } = [];

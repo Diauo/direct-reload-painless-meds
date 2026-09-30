@@ -26,7 +26,7 @@ public class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "com.rz99.directreload.client";
     public const string PluginName = "Direct Reload & Painless Meds";
-    public const string PluginVersion = "1.0.2";
+    public const string PluginVersion = "1.2.0";
 
     internal static Plugin Instance = null!;
 
@@ -56,6 +56,16 @@ public class Plugin : BaseUnityPlugin
 
     /// <summary>Instant magazine unload (native instant-unload routine).</summary>
     public static ConfigEntry<bool> InstantMagUnload = null!;
+
+    // ── FOV unlock ────────────────────────────────────────
+    /// <summary>Allow selecting a base FOV beyond the vanilla 75 cap.</summary>
+    public static ConfigEntry<bool> EnableFovUnlock = null!;
+
+    /// <summary>Selectable base FOV minimum.</summary>
+    public static ConfigEntry<int> FovMin = null!;
+
+    /// <summary>Selectable base FOV maximum.</summary>
+    public static ConfigEntry<int> FovMax = null!;
 
     // ── Debug ─────────────────────────────────────────────
     public static ConfigEntry<bool> DebugLog = null!;
@@ -130,6 +140,36 @@ public class Plugin : BaseUnityPlugin
             "\n" +
             "Emptying a magazine completes instantly (whole-stack native routine) — great for stripping ammo off dead enemies.");
 
+        EnableFovUnlock = Config.Bind(
+            "6. 视野 | FOV",
+            "解锁 FOV 上限 (Unlock FOV Range)",
+            true,
+            "启用后：游戏设置里的视野（FOV）可在下方自定义区间内选择，突破原版上限 75。\n" +
+            "调整 FOV 后需重启游戏/重进战局生效（与游戏自身设置项相同）。\n" +
+            "\n" +
+            "Lets the in-game FOV setting go beyond the vanilla 75 cap, within the custom range below.\n" +
+            "Applied on settings change; takes effect when entering a raid (same as vanilla).");
+
+        FovMin = Config.Bind(
+            "6. 视野 | FOV",
+            "FOV 最小值 (Min FOV)",
+            50,
+            new ConfigDescription(
+                "设置里可选择的最小 FOV（原版 50）。\n" +
+                "\n" +
+                "Minimum selectable base FOV (vanilla: 50).",
+                new AcceptableValueRange<int>(1, 200)));
+
+        FovMax = Config.Bind(
+            "6. 视野 | FOV",
+            "FOV 最大值 (Max FOV)",
+            110,
+            new ConfigDescription(
+                "设置里可选择的最大 FOV（原版上限 75，推荐 100~110；越高视野越广、目标越小）。\n" +
+                "\n" +
+                "Maximum selectable base FOV (vanilla cap: 75; 100-110 recommended).",
+                new AcceptableValueRange<int>(1, 200)));
+
         DebugLog = Config.Bind(
             "4. 调试 | Debug",
             "输出调试日志 (Debug Logging)",
@@ -154,6 +194,17 @@ public class Plugin : BaseUnityPlugin
         catch (System.Exception ex)
         {
             Log.LogError($"[DirectReload] Failed to enable patches: {ex}");
+        }
+
+        try
+        {
+            new FovClampPatch().Enable();
+            new FovSliderPatch().Enable();
+            Log.LogInfo("[DirectReload] FOV unlock patches enabled");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"[DirectReload] FOV unlock patches failed to enable: {ex.Message}");
         }
 
         TryEnableFikaHostMirror();

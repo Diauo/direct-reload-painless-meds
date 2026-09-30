@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RZDirectReload</AssemblyName>
     <RootNamespace>RZDirectReload.Client</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
   </PropertyGroup>
 
   <!-- SPT 4.1.6 client-side references (copied from the game install E:\Games\SPT_EFT).
@@ -39,6 +39,18 @@
     </Reference>
     <Reference Include="Comfort">
       <HintPath>libs/Comfort.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.Serialization">
+      <HintPath>libs/Sirenix.Serialization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.Utilities">
+      <HintPath>libs/Sirenix.Utilities.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.Serialization.Config">
+      <HintPath>libs/Sirenix.Serialization.Config.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

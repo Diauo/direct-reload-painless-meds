@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0
+- **New — FOV unlock:** the in-game base-FOV setting is no longer capped at 75. The settings slider and the value clamp now use a configurable range (default 50–110), toggleable in the F12 menu. Shipped on **both** SPT lines (4.0.x + 4.1.x).
+- Versions unified: both lines now carry the same version number.
+- (4.1 line carries everything from the 1.1.0 port below.)
+
 ## 1.1.0
 - **SPT 4.1 support:** full client + server re-port for SPT 4.1.x (EFT 0.16.9.5), built against the deobfuscated 4.1 client contract (`hollowed.dll`). See `direct-reload-41/`.
 - **Fixed:** the 4.1 inventory observer system rejected the softcore reload's temporary magazine stow (`UnknownItemError` — "Cannot manipulate unknown or not found item"). The magazine is now flagged as *temporarily known* during the reload transaction, mirroring the game's own drag operations, and cleared afterwards.
