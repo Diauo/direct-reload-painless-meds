@@ -2,7 +2,7 @@
 
 **A lightweight QoL duo for SPT — Stalker-style reloading plus faster, penalty-free medical care.**
 
-Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine on your gun straight from the loose rounds you carry — no spare magazines required. And when things go wrong, **Painless Meds** speeds up medical care, removes the max-HP surgery penalty, and keeps animations in sync.
+Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine on your gun straight from the loose rounds you carry — no spare magazines required — and pick exactly which round goes in first. When things go wrong, **Painless Meds** speeds up medical care, removes the max-HP surgery penalty, and keeps animations in sync.
 
 ---
 
@@ -10,15 +10,18 @@ Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine
 
 | SPT version | Mod version | Client artifact | Server artifact |
 |---|---|---|---|
-| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.2.0** | `direct-reload-41/client` | `direct-reload-41/server` |
-| **SPT 4.0.x** (EFT 0.16.9.40087) | **v1.2.0** | `direct-reload/client` | `direct-reload/server` |
+| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.3.0** | `direct-reload-41/client` | `direct-reload-41/server` |
+| **SPT 4.0.x** (EFT 0.16.9.40087) | v1.2.0 (frozen) | `direct-reload/client` | `direct-reload/server` |
 
-Both lines are maintained in this repository — pick the source directory matching your SPT version.
+The **4.1 line is actively maintained**; the **4.0 line is frozen at v1.2.0** and no longer receives updates.
 
 ## Features
 
 ### Reload
 - **Direct reload (Stalker-style):** press R with compatible loose ammo in reach (pockets / rig) — one reload animation plays and the magazine on your gun is filled from your loose rounds. **No spare magazine needed.**
+- **Ammo selection wheel (hold R):** hold the reload key to open a radial menu of every compatible round you carry — icons, damage, penetration and available counts included. Scroll to flip pages (7 slots per page); release to select. Pick a priority round and every reload refills with it first, automatically falling back to the rest (highest penetration first) once it runs out. Default **AUTO** = highest penetration first.
+- **Magazine hygiene:** every reload returns the magazine's old rounds to your rig before refilling — the priority round is loaded on top, and Tarkov feeds magazines from the top, so your chosen ammo is the first one fired.
+- **Magazine + chamber compatibility enforced:** the wheel only ever lists rounds accepted by **both** the magazine and the weapon's chamber.
 - **Covers standard magazine weapons** *and* **detachable-mag weapons with direct-feed support** (e.g. SKS-A style setups).
 - **Pure internal-magazine weapons (Mosin, fixed-mag SKS) intentionally keep the vanilla one-by-one loading** — a deliberate realism/softcore balance point, not a bug.
 - **Instant magazine ops:** filling or emptying magazines from your inventory completes instantly — great for stripping ammo off dead enemies.
@@ -40,8 +43,8 @@ Fully multiplayer-safe. In Fika sessions the **host mirrors the reload fill/cham
 ---
 
 ## Requirements
-- **SPT 4.1.x** (EFT 0.16.9.5) → use v1.1.0 artifacts
-- **SPT 4.0.x** (EFT 0.16.9.40087) → use v1.0.2 artifacts
+- **SPT 4.1.x** (EFT 0.16.9.5) → use v1.3.0 artifacts
+- **SPT 4.0.x** (EFT 0.16.9.40087) → frozen at v1.2.0 (no longer maintained)
 - BepInEx (bundled with SPT)
 
 ## Installation
@@ -62,6 +65,9 @@ Extract the release archive into your **SPT root** (it merges the directory layo
 |---|---|---|
 | Enable Direct Reload | on | the core feature |
 | Show Reload Failure Notification | on | native warning on transaction failure |
+| Enable Ammo Wheel | on | hold the reload key to select a priority round |
+| Wheel Hold Threshold (ms) | 180 | holding longer than this opens the wheel |
+| Fallback Reload Key | R | used only if the game key-bind cannot be read |
 | Sync Med Animation Speed | on | match animation to server use time |
 | Animation Speed Scale | 2.0 | = 1 / server `medUseTime.multiplier` |
 | Enable Batch Surgery | on | all limbs in one use |
@@ -84,6 +90,7 @@ Extract the release archive into your **SPT root** (it merges the directory layo
 | Detachable mag + direct-feed support (EXWIRS) | direct reload |
 | Pure internal magazine (Mosin / fixed-mag SKS) | vanilla one-by-one loading |
 
+- The ammo source follows the game's own "reachable items" rules — mods that expand what you can reach (e.g. Use Items Anywhere) automatically expand what the wheel and direct reload can pull from.
 - **SPT 4.1 note:** the 4.1 softcore reload flags the stowed magazine as temporarily known during the reload transaction, mirroring the game's own drag operations — required by the 4.1 inventory observer system (`UnknownItemError` otherwise).
 
 ---
@@ -92,20 +99,11 @@ Extract the release archive into your **SPT root** (it merges the directory layo
 
 Requirements: **.NET SDK** and an **SPT installation matching your target line** to copy reference assemblies from (game/SPT binaries are not redistributed in this repository).
 
-### SPT 4.0.x — `direct-reload/`
-
-1. Copy reference DLLs:
-   - **Client** → `direct-reload/client/libs/`:
-     `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `Comfort.dll`, `Sirenix.Serialization.dll`, `Sirenix.Utilities.dll`, `Sirenix.Serialization.Config.dll` (from `EscapeFromTarkov_Data/Managed`)
-   - **Server** → `libs/` (repository root):
-     `SPTarkov.Server.Core.dll`, `SPTarkov.DI.dll`, `SPTarkov.Common.dll`, `SemanticVersioning.dll` (from your SPT server installation)
-2. Build: `./build.sh` (or `dotnet build -c Release` inside each project).
-
-### SPT 4.1.x — `direct-reload-41/`
+### SPT 4.1.x — `direct-reload-41/` *(actively maintained)*
 
 1. Copy reference DLLs:
    - **Client** → `direct-reload-41/client/libs/`:
-     `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `Comfort.dll`, `Sirenix.Serialization.dll`, `Sirenix.Utilities.dll`, `Sirenix.Serialization.Config.dll` (from `EscapeFromTarkov_Data/Managed`), and **`hollowed.dll`** — the deobfuscated `Assembly-CSharp` contract used by all SPT 4.1 client mods:
+     `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `UnityEngine.UI.dll`, `UnityEngine.UIModule.dll`, `UnityEngine.IMGUIModule.dll`, `UnityEngine.InputLegacyModule.dll`, `UnityEngine.TextRenderingModule.dll`, `UnityEngine.PhysicsModule.dll`, `Comfort.dll`, `Sirenix.Serialization.dll`, `Sirenix.Utilities.dll`, `Sirenix.Serialization.Config.dll` (from `EscapeFromTarkov_Data/Managed`), and **`hollowed.dll`** — the deobfuscated `Assembly-CSharp` contract used by all SPT 4.1 client mods:
      ```bash
      curl -L -o direct-reload-41/client/libs/hollowed.dll \
        https://raw.githubusercontent.com/sp-tarkov/modules/main/project/Shared/Hollowed/hollowed.dll
@@ -114,16 +112,25 @@ Requirements: **.NET SDK** and an **SPT installation matching your target line**
 
 2. Build: `./build.sh` (or `dotnet build -c Release` inside each project).
 
+### SPT 4.0.x — `direct-reload/` *(frozen at v1.2.0)*
+
+1. Copy reference DLLs:
+   - **Client** → `direct-reload/client/libs/`:
+     `0Harmony.dll`, `BepInEx.dll` (from `BepInEx/core`), `spt-reflection.dll` (from `BepInEx/plugins/spt`), `Assembly-CSharp.dll`, `UnityEngine.dll`, `UnityEngine.CoreModule.dll`, `Comfort.dll`, `Sirenix.Serialization.dll`, `Sirenix.Utilities.dll`, `Sirenix.Serialization.Config.dll` (from `EscapeFromTarkov_Data/Managed`)
+   - **Server** → `libs/` (repository root):
+     `SPTarkov.Server.Core.dll`, `SPTarkov.DI.dll`, `SPTarkov.Common.dll`, `SemanticVersioning.dll` (from your SPT server installation)
+2. Build: `dotnet build -c Release` inside each project.
+
 Outputs:
-- 4.0 client: `direct-reload/client/bin/Release/netstandard2.1/RZDirectReload.dll`
-- 4.0 server: `direct-reload/server/bin/Release/net9.0/RZDirectReload.Server.dll`
 - 4.1 client: `direct-reload-41/client/bin/Release/netstandard2.1/RZDirectReload.dll`
 - 4.1 server: `direct-reload-41/server/bin/Release/RZDirectReload.Server/RZDirectReload.Server.dll`
+- 4.0 client: `direct-reload/client/bin/Release/netstandard2.1/RZDirectReload.dll`
+- 4.0 server: `direct-reload/server/bin/Release/net9.0/RZDirectReload.Server.dll`
 
 ## Project layout
-- `direct-reload/` — SPT 4.0 line (client + server)
-- `direct-reload-41/` — SPT 4.1 line (client + server)
-- `build.sh` — builds both lines
+- `direct-reload-41/` — SPT 4.1 line (client + server) — **actively maintained**
+- `direct-reload/` — SPT 4.0 line (client + server) — **frozen at v1.2.0**
+- `build.sh` — builds the 4.1 line
 
 ## Credits & Acknowledgements
 

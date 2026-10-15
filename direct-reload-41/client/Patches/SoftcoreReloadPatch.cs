@@ -8,6 +8,8 @@ using EFT.Communications;
 using EFT.InventoryLogic;
 using EFT.Settings;
 using HarmonyLib;
+using RZDirectReload.Client.Fika;
+using RZDirectReload.Client.Inputs;
 using SPT.Reflection.Patching;
 
 namespace RZDirectReload.Client.Patches;
@@ -17,26 +19,86 @@ namespace RZDirectReload.Client.Patches;
 /// 目标：EFT.FirearmHandsInputTranslator.ReloadExternalMagazine(Weapon, bool)
 ///   （4.0: Class1730.method_17 —— 逻辑与 4.0 逐行同构）。
 /// 覆盖模式：ExternalMagazine + EXWIRS；纯弹仓武器保持原版。
-/// 4.1 编译参考集 = hollowed.dll（与 Fika 等所有 4.1 客户端 mod 相同）。
+///
+/// 1.3.0 两段式输入：
+///   · 轮盘关闭 → 现役行为（按下即装；旧路径保留）。
+///   · 轮盘开启 → 按下只挂起；轻按（松开 &lt; 阈值）= 直装；长按（≥ 阈值）= 弹药选择轮盘（只选不装）。
+///   · tap 后仍须交原版的情况 → 一次性护栏 + 缓存方法转发（防前缀重入）。
 /// </summary>
 internal class SoftcoreReloadPatch : ModulePatch
 {
+    private static MethodBase? _targetMethod;
+
+    /// <summary>转发原版时的一次性护栏（防止 Invoke 重入本前缀形成死循环）。</summary>
+    [ThreadStatic]
+    private static bool _vanillaForward;
+
     protected override MethodBase GetTargetMethod()
     {
-        return AccessTools.Method(
+        _targetMethod = AccessTools.Method(
                    typeof(FirearmHandsInputTranslator),
                    "ReloadExternalMagazine",
                    new[] { typeof(Weapon), typeof(bool) })
                ?? throw new InvalidOperationException(
                    "[DirectReload] FirearmHandsInputTranslator.ReloadExternalMagazine not found — game version mismatch?");
+        return _targetMethod;
     }
 
     [PatchPrefix]
     private static bool Prefix(FirearmHandsInputTranslator __instance, Weapon weapon, bool quickReload, ref bool __result)
     {
+        if (_vanillaForward)
+        {
+            return true; // 原版转发中：直接放行原版体
+        }
+
         try
         {
-            return TrySoftcoreReload(__instance, weapon, ref __result);
+            // ── 是否进入本系统的最早闸门（判定失败即回原版） ──
+            if (!Plugin.EnableDirectLoad.Value)
+            {
+                Dbg("exit: feature disabled");
+                return true;
+            }
+
+            if (weapon == null)
+            {
+                Dbg("exit: weapon null");
+                return true;
+            }
+
+            if (weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazine
+                && weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazineWithInternalReloadSupport)
+            {
+                Dbg($"exit: reload mode={weapon.ReloadMode} (not ExternalMagazine / EXWIRS)");
+                return true;
+            }
+
+            if (!Plugin.EnableAmmoWheel.Value)
+            {
+                // 轮盘关闭：保持现役「按下即装」行为（旧路径一字不改）
+                Dbg("wheel path: disabled → legacy");
+                return TrySoftcoreReload(__instance, weapon, ref __result);
+            }
+
+            if (__instance._inventoryController == null)
+            {
+                Dbg("exit: controller null");
+                return true;
+            }
+
+            if (weapon.GetCurrentMagazine() == null)
+            {
+                Dbg("exit: magazine null");
+                return true;
+            }
+
+            // 轮盘模式：消费命令并记录（按键手势由物理键监视器驱动——与绑定触发类型无关：
+            // Press 触发在按下时到达、Release 触发在松开时到达，监视器都能正确识别手势）
+            AmmoWheelController.NoteCommand(__instance, weapon);
+            Dbg("wheel: command consumed (gesture watcher drives)");
+            __result = true;
+            return false;
         }
         catch (Exception ex)
         {
@@ -46,25 +108,15 @@ internal class SoftcoreReloadPatch : ModulePatch
         }
     }
 
-    /// <returns>true = 执行原版；false = 本 mod 已接管 __result。</returns>
-    private static bool TrySoftcoreReload(FirearmHandsInputTranslator instance, Weapon weapon, ref bool __result)
+    /// <summary>
+    /// 轻按路径（以及轮盘关闭时的现役路径）：直装全流程。
+    /// </summary>
+    /// <returns>true = 应交原版执行（调用方负责转发）；false = 本 mod 已接管 __result。</returns>
+    internal static bool TrySoftcoreReload(FirearmHandsInputTranslator instance, Weapon weapon, ref bool __result)
     {
         if (!Plugin.EnableDirectLoad.Value)
         {
             Dbg("exit: feature disabled");
-            return true;
-        }
-
-        if (weapon == null)
-        {
-            Dbg("exit: weapon null");
-            return true;
-        }
-
-        if (weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazine
-            && weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazineWithInternalReloadSupport)
-        {
-            Dbg($"exit: reload mode={weapon.ReloadMode} (not ExternalMagazine / EXWIRS)");
             return true;
         }
 
@@ -105,19 +157,12 @@ internal class SoftcoreReloadPatch : ModulePatch
             }
         }
 
-        if (magazine.Count >= magazine.MaxCount && weapon.ChamberAmmoCount > 0)
-        {
-            Dbg("exit: magazine and chamber already full");
-            __result = true;
-            return false;
-        }
-
         // 可触及的兼容弹药（预检口径与提交一致：同一实现）。
         List<Ammo> piles;
         int reachableRounds;
         try
         {
-            piles = AmmoCommit.FindReachablePiles(controller, magazine);
+            piles = AmmoCommit.FindReachablePiles(controller, magazine, weapon);
             reachableRounds = AmmoCommit.CountLiveRounds(piles);
         }
         catch (Exception ex)
@@ -166,6 +211,19 @@ internal class SoftcoreReloadPatch : ModulePatch
                 return false;
             }
 
+            // 捕获本轮的弹药选择（提交与 Fika 同步共用同一份快照，杜绝竞态）
+            var capturedSelection = AmmoSelectionState.Current.Snapshot();
+
+            // 通知宿主镜像（单机 / 无 Fika 时为空操作；在 ReloadMag 之前发送，同通道有序）
+            try
+            {
+                FikaAmmoSelectionBridge.SendSelection(controller.ID, capturedSelection);
+            }
+            catch (Exception sex)
+            {
+                Dbg($"selection send failed: {sex.Message}");
+            }
+
             Dbg($"calling ReloadMag (mag={magazine.Count}/{magazine.MaxCount})");
 
             // 4.1 观察系统：同一弹匣在事务内二次移动（枪 → 暂存格 → 枪）时，
@@ -198,7 +256,7 @@ internal class SoftcoreReloadPatch : ModulePatch
                     freeAddress,
                     (Callback)delegate(IResult reloadResult)
                     {
-                        HandleReloadFinished(weapon, controller, magazine, reloadResult);
+                        HandleReloadFinished(weapon, controller, magazine, reloadResult, capturedSelection);
                     });
             }
             catch
@@ -221,12 +279,38 @@ internal class SoftcoreReloadPatch : ModulePatch
         }
     }
 
+    /// <summary>转发原版（tap 后仍须交原版的情况：如无弹药 → 原版备用弹匣流程）。</summary>
+    internal static void ForwardToVanilla(FirearmHandsInputTranslator instance, Weapon weapon, bool quickReload)
+    {
+        var target = _targetMethod;
+        if (target == null || instance == null || weapon == null)
+        {
+            return;
+        }
+
+        _vanillaForward = true;
+        try
+        {
+            Dbg("forwarding reload to vanilla");
+            target.Invoke(instance, new object[] { weapon, quickReload });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"[DirectReload] vanilla reload forward failed: {ex}");
+        }
+        finally
+        {
+            _vanillaForward = false;
+        }
+    }
+
     /// <summary>动画完成后的收尾：共享提交逻辑补填弹匣并补膛（Fika 会话下由宿主镜像执行同一组提交）。</summary>
     private static void HandleReloadFinished(
         Weapon weapon,
         InventoryController controller,
         Magazine magazine,
-        IResult? reloadResult)
+        IResult? reloadResult,
+        AmmoSelectionSnapshot capturedSelection)
     {
         try
         {
@@ -237,7 +321,7 @@ internal class SoftcoreReloadPatch : ModulePatch
                 return;
             }
 
-            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "post-animation");
+            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "post-animation", capturedSelection);
             if (result.Failed)
             {
                 NotifyReloadFailure("Direct load after the animation failed", "动画完成后的装填失败", result.Error);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+- **New — ammo selection wheel:** hold the reload key (default R) to open a radial menu of every caliber-compatible round you carry — icons, damage, penetration and available counts included. Scroll to flip pages (7 slots per page), release to select. Pick a priority round and every reload refills with it first, automatically falling back to the rest (highest penetration first) once it runs out. Default **AUTO** = highest penetration first.
+- **Reloads now return the magazine's old rounds first:** every reload dumps the magazine back to your rig (merging into same-type stacks) before refilling — magazines end up with exactly the mix you expect, and the priority round sits on top (it is the first one fired).
+- **Magazine + chamber compatibility enforced:** the wheel and direct reload only accept rounds compatible with both the magazine and the weapon's chamber.
+- **Fika-safe as before:** the host mirror executes the same dump/refill sequence.
+- **SPT 4.1.x only from this version:** the SPT 4.0.x line is frozen at v1.2.0 and no longer receives updates.
+
 ## 1.2.0
 - **New — FOV unlock:** the in-game base-FOV setting is no longer capped at 75. The settings slider and the value clamp now use a configurable range (default 50–110), toggleable in the F12 menu. Shipped on **both** SPT lines (4.0.x + 4.1.x).
 - Versions unified: both lines now carry the same version number.

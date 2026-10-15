@@ -32,15 +32,18 @@ internal static class AmmoCommit
         public bool Failed => Error != null;
     }
 
-    /// <summary>可触及的兼容弹药堆（原生同源：FastAccessSlots），按物品 ID 排序保证跨端确定性。</summary>
-    internal static List<Ammo> FindReachablePiles(InventoryController controller, Magazine magazine)
+    /// <summary>可触及的兼容弹药堆（原生同源：FastAccessSlots），按物品 ID 排序保证跨端确定性。
+    /// 兼容链 = 弹匣可装 ∧ 武器枪膛可接纳（排除"弹匣能装但枪打不了"的弹药，如 5.56 枪 + .300 弹）。</summary>
+    internal static List<Ammo> FindReachablePiles(InventoryController controller, Magazine magazine, Weapon? weapon = null)
     {
         var piles = new List<Ammo>();
         controller.GetReachableItemsOfTypeNonAlloc(
             piles,
             ammo => ammo.StackObjectsCount > 0
+                    && controller.Examined(ammo)
+                    && ammo.CheckAction(null).Succeeded
                     && magazine.CheckCompatibility(ammo)
-                    && controller.Examined(ammo));
+                    && WeaponAccepts(weapon, ammo));
 
         piles.Sort((a, b) => string.CompareOrdinal(a.Id.ToString(), b.Id.ToString()));
         return piles;
@@ -88,39 +91,164 @@ internal static class AmmoCommit
         }
 
         var beforeAll = magazine.Count;
-        var ammoPack = new AmmoPack(livePiles);
 
-        for (var i = 0; i < requested && ammoPack.AmmoCount > 0; i++)
+        // 1) 按优先级计算取量计划：目标弹药优先取用，不足由后续堆依序补足——
+        //    内容（各弹种数量）与顺序语义解耦，总量与“先装目标弹”方案完全一致。
+        var plan = new List<(Ammo Pile, int Take)>();
+        var remaining = requested;
+        foreach (var ammo in livePiles)
         {
-            var beforeStep = magazine.Count;
-            var loadOp = ammoPack.LoadAmmo(
-                controller,
-                controller,
-                magazine.Cartridges.CreateItemAddress());
-
-            if (loadOp.Error != null)
+            if (remaining <= 0)
             {
-                return new DirectLoadResult(
-                    requested,
-                    available,
-                    magazine.Count - beforeAll,
-                    $"LoadAmmo step {i} failed: {loadOp.Error}");
+                break;
             }
 
-            loadOp.Value.RaiseEvents(controller, CommandStatus.Begin);
-            loadOp.Value.RaiseEvents(controller, CommandStatus.Succeed);
-
-            if (magazine.Count <= beforeStep)
+            var take = Math.Min(remaining, ammo.StackObjectsCount);
+            if (take > 0)
             {
-                return new DirectLoadResult(
-                    requested,
-                    available,
-                    magazine.Count - beforeAll,
-                    $"LoadAmmo step {i} emitted events but magazine count stayed at {magazine.Count}");
+                plan.Add((ammo, take));
+                remaining -= take;
+            }
+        }
+
+        // 2) 反向执行装填（低优先级先入匣 = 堆底部；目标弹药最后入匣 = 堆顶部）。
+        //    塔科夫弹匣从顶部（Cartridges.Last）消耗——上膛与射击都取 Last——
+        //    因此只有反向装填才能让“优先弹药先打、打完降级”，与选择语义一致。
+        var step = 0;
+        for (var p = plan.Count - 1; p >= 0; p--)
+        {
+            var (pile, take) = plan[p];
+            var pack = new AmmoPack(new List<Ammo> { pile });
+            for (var i = 0; i < take; i++)
+            {
+                var beforeStep = magazine.Count;
+                var loadOp = pack.LoadAmmo(
+                    controller,
+                    controller,
+                    magazine.Cartridges.CreateItemAddress());
+
+                if (loadOp.Error != null)
+                {
+                    return new DirectLoadResult(
+                        requested,
+                        available,
+                        magazine.Count - beforeAll,
+                        $"LoadAmmo step {step} failed: {loadOp.Error}");
+                }
+
+                loadOp.Value.RaiseEvents(controller, CommandStatus.Begin);
+                loadOp.Value.RaiseEvents(controller, CommandStatus.Succeed);
+
+                if (magazine.Count <= beforeStep)
+                {
+                    return new DirectLoadResult(
+                        requested,
+                        available,
+                        magazine.Count - beforeAll,
+                        $"LoadAmmo step {step} emitted events but magazine count stayed at {magazine.Count}");
+                }
+
+                step++;
             }
         }
 
         return new DirectLoadResult(requested, available, magazine.Count - beforeAll, null);
+    }
+
+    /// <summary>
+    /// 卸空弹匣：把弹匣内所有弹药堆依序移回装备容器（口袋/弹挂/背包）。
+    /// 本地原语执行（simulate:false 直接移动 + RaiseEvents），指令序确定（始终取栈末、
+    /// 按目标容器顺序搜索）——客户端与 Fika 宿主镜像各自执行同一操作，保证两端一致。
+    /// </summary>
+    /// <returns>null = 成功；否则为错误信息（已尽力回滚已移动的堆）。</returns>
+    internal static string? UnloadMagazine(InventoryController controller, Magazine magazine)
+    {
+        var moved = new List<IItemOperationResult>();
+        var rolledBack = false;
+        string? error = null;
+
+        try
+        {
+            var targets = new CompoundItem[] { controller.Inventory.Equipment };
+            var guard = 0;
+            while (magazine.Cartridges.Count > 0 && guard++ < 64)
+            {
+                if (magazine.Cartridges.Last is not Ammo ammo)
+                {
+                    break;
+                }
+
+                // 注意：合并路径会把源弹堆解引用（CurrentAddress=null），
+                // 所以只允许在移动“前”读取信息，移动后不得再访问 ammo 的任何属主信息。
+                var stackSize = SafeStackCount(ammo);
+
+                var found = ItemManipulator.QuickFindAppropriatePlace(
+                    ammo,
+                    controller,
+                    targets,
+                    ItemManipulator.EMoveItemOrder.UnloadAmmo,
+                    simulate: false);
+
+                if (found.Failed)
+                {
+                    foreach (var done in moved)
+                    {
+                        try
+                        {
+                            done.RollBack();
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+
+                    rolledBack = true;
+                    error = found.Error?.ToString() ?? "no place for unloaded ammo";
+                    break;
+                }
+
+                moved.Add(found.Value);
+                SoftcoreReloadPatch.Dbg($"unload: moved a stack of {stackSize}");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 状态已部分变更：已完成的移动保留，为其补发事件后再报告错误
+            error = ex.Message;
+        }
+
+        if (!rolledBack && moved.Count > 0)
+        {
+            try
+            {
+                foreach (var op in moved)
+                {
+                    op.RaiseEvents(controller, CommandStatus.Begin);
+                    op.RaiseEvents(controller, CommandStatus.Succeed);
+                }
+
+                magazine.RaiseRefreshEvent();
+            }
+            catch (Exception ex)
+            {
+                SoftcoreReloadPatch.Dbg($"unload: event raise failed: {ex.Message}");
+            }
+        }
+
+        return error;
+    }
+
+    private static int SafeStackCount(Ammo ammo)
+    {
+        try
+        {
+            return ammo.StackObjectsCount;
+        }
+        catch
+        {
+            return -1;
+        }
     }
 
     /// <summary>动画后补上膛（复刻原版空弹匣路径）：弹匣 -1、膛内 +1。两端各自本地执行。</summary>
@@ -158,19 +286,92 @@ internal static class AmmoCommit
         }
     }
 
-    /// <summary>重新取堆 → 填满弹匣 → 补膛（客户端回调与 Fika 宿主镜像共用）。</summary>
+    /// <summary>
+    /// 按选择快照排序取弹顺序（双端一致性硬约束——客户端提交与宿主镜像必须执行完全相同的排序）：
+    ///   ① Explicit 模式：目标模板优先；
+    ///   ② 穿深降序；
+    ///   ③ itemId 字符串升序（决定性兜底）。
+    /// </summary>
+    internal static List<Ammo> OrderPiles(List<Ammo> piles, AmmoSelectionSnapshot selection)
+    {
+        var ordered = new List<Ammo>(piles);
+        bool explicitMode = selection.Mode == AmmoSelectionMode.Explicit
+                            && !string.IsNullOrEmpty(selection.TemplateId);
+
+        ordered.Sort((a, b) =>
+        {
+            if (explicitMode)
+            {
+                bool aTarget = a.TemplateId.ToString() == selection.TemplateId;
+                bool bTarget = b.TemplateId.ToString() == selection.TemplateId;
+                if (aTarget != bTarget)
+                {
+                    return aTarget ? -1 : 1;
+                }
+            }
+
+            int pen = b.PenetrationPower.CompareTo(a.PenetrationPower);
+            if (pen != 0)
+            {
+                return pen;
+            }
+
+            return string.CompareOrdinal(a.Id.ToString(), b.Id.ToString());
+        });
+
+        return ordered;
+    }
+
+    /// <summary>武器-弹药兼容（与官方装填预检一致：以枪膛口径为准）。异常时按允许处理（保持原有行为）。</summary>
+    internal static bool WeaponAccepts(Weapon? weapon, Ammo ammo)
+    {
+        try
+        {
+            return weapon == null
+                || !weapon.HasChambers
+                || weapon.Chambers.Length == 0
+                || weapon.Chambers[0].CanAccept(ammo);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    /// <summary>重新取堆 → 按选择排序 → 填满弹匣 → 补膛 → 记录最后使用（客户端回调与 Fika 宿主镜像共用）。</summary>
     internal static DirectLoadResult CommitAfterReload(
         InventoryController controller,
         Magazine magazine,
         Weapon weapon,
-        string stage)
+        string stage,
+        AmmoSelectionSnapshot selection)
     {
-        var piles = FindReachablePiles(controller, magazine);
-        var result = FillMagazine(controller, magazine, piles, int.MaxValue);
+        // 1) 先卸空弹匣：退出全部旧弹药（移回口袋/弹挂/背包；两端各自执行同一操作，指令序确定）
+        var unloadError = UnloadMagazine(controller, magazine);
+        if (unloadError != null)
+        {
+            SoftcoreReloadPatch.Dbg($"{stage}: magazine unload failed: {unloadError}");
+            return new DirectLoadResult(0, 0, 0, $"magazine unload failed: {unloadError}");
+        }
+
+        // 2) 再按选择顺序填满（弹匣现在为空，容量即整匣）
+        var piles = FindReachablePiles(controller, magazine, weapon);
+        var ordered = OrderPiles(piles, selection);
+
+        // 记录“最后使用弹药”候选：排序中第一种可实装的堆（填装从它开始消耗）
+        var firstLive = ordered.FirstOrDefault(
+            a => a != null && a.StackObjectsCount > 0 && a.CurrentAddress != null);
+
+        var result = FillMagazine(controller, magazine, ordered, int.MaxValue);
         SoftcoreReloadPatch.LogDirectLoad(stage, magazine, result);
         if (result.Failed)
         {
             return result;
+        }
+
+        if (result.Loaded > 0 && firstLive != null)
+        {
+            AmmoSelectionState.MarkLastUsed(firstLive);
         }
 
         ChamberRound(weapon, controller, magazine);

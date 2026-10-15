@@ -3,10 +3,15 @@ using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using Comfort.Common;
 using EFT;
 using EFT.InventoryLogic;
 using HarmonyLib;
+using RZDirectReload.Client.Fika;
+using RZDirectReload.Client.Inputs;
 using RZDirectReload.Client.Patches;
+using RZDirectReload.Client.Visuals;
+using UnityEngine;
 
 namespace RZDirectReload.Client;
 
@@ -15,6 +20,8 @@ namespace RZDirectReload.Client;
 /// 软核装弹：按 R 后从可触及位置直接装填枪上弹匣；不使用备用弹匣。
 ///   覆盖标准弹匣武器 + 可拆弹匣且支持直装的武器（EXWIRS）；
 ///   纯弹仓武器（莫辛 / 固定弹仓 SKS 等）保持原版逐发装填（拟真平衡点）。
+/// 弹药选择轮盘（1.3.0）：按住装填键弹出轮盘选定“优先弹药”，直装按选择取弹（不够自动降级）；
+///   默认「自动」= 穿深最高的弹药优先；Fika 会话下选择随换弹同步至宿主镜像（零编译依赖）。
 /// 批量手术：一次使用手术包治疗所有残疾肢体（每个消耗 1 点耐久）。
 /// 弹匣瞬时操作：背包内弹匣装填/卸出子弹瞬间完成。
 /// 配置界面为双语（中文 | English 双显）。
@@ -28,7 +35,7 @@ public class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "com.rz99.directreload.client";
     public const string PluginName = "Direct Reload & Painless Meds";
-    public const string PluginVersion = "1.2.0";
+    public const string PluginVersion = "1.3.0";
 
     internal static Plugin Instance = null!;
 
@@ -40,6 +47,16 @@ public class Plugin : BaseUnityPlugin
 
     /// <summary>Show a native-style warning when a detected direct reload still fails.</summary>
     public static ConfigEntry<bool> EnableReloadFailureNotification = null!;
+
+    // ── Ammo wheel ────────────────────────────────────────
+    /// <summary>Enable the ammo selection wheel (hold reload key).</summary>
+    public static ConfigEntry<bool> EnableAmmoWheel = null!;
+
+    /// <summary>Press duration (ms) above which the wheel opens.</summary>
+    public static ConfigEntry<int> WheelHoldMs = null!;
+
+    /// <summary>Fallback reload key code (used when the game key-bind state cannot be read).</summary>
+    public static ConfigEntry<KeyCode> WheelFallbackKey = null!;
 
     // ── Med animation sync ────────────────────────────────
     /// <summary>Match med/surgery animation speed to the server medUseTime multiplier.</summary>
@@ -72,6 +89,11 @@ public class Plugin : BaseUnityPlugin
     // ── Debug ─────────────────────────────────────────────
     public static ConfigEntry<bool> DebugLog = null!;
 
+    // ── Wheels runtime ────────────────────────────────────
+    private AmmoWheelOverlay? _wheelOverlay;
+    private GameWorld? _lastWorld;
+    private bool _updateErrorLogged;
+
     private void Awake()
     {
         Instance = this;
@@ -97,6 +119,35 @@ public class Plugin : BaseUnityPlugin
             "仅当口袋/弹挂中已经检测到兼容散装弹药，但装填事务仍失败时，使用塔科夫原生右下角警告提示（中英双语）。没有可用弹药时不会显示此提示。\n" +
             "\n" +
             "Shows the native bottom-right warning (bilingual) only when compatible loose ammo was detected but the reload transaction still failed. No warning when no usable ammo is available.");
+
+        EnableAmmoWheel = Config.Bind(
+            "7. 弹药轮盘 | Ammo Wheel",
+            "启用弹药轮盘 (Enable Ammo Wheel)",
+            true,
+            "按住装填键（默认 R）弹出弹药选择轮盘：选定后，之后每次换弹会先退出弹匣内旧弹药，再按选择优先重装（用尽自动降级到其余弹药，按穿深从高到低）。\n" +
+            "默认「自动」= 穿深最高的弹药优先；轮盘只列出弹匣与枪膛都兼容的弹药。轻按装填键 = 照常直装；轮盘只做选择、不触发换弹。\n" +
+            "关闭 = 回到「按下即装」，不弹轮盘。\n" +
+            "\n" +
+            "Hold the reload key (default R) to open the ammo wheel; each subsequent reload first dumps the magazine's old rounds, then refills with the selected ammo first (auto-falls back to the rest, highest penetration first, when it runs out).\n" +
+            "Default AUTO = highest-penetration ammo first; the wheel only lists ammo compatible with both magazine and chamber. A quick tap reloads as usual; the wheel only selects, it never reloads by itself.");
+
+        WheelHoldMs = Config.Bind(
+            "7. 弹药轮盘 | Ammo Wheel",
+            "长按判定毫秒 (Hold Threshold ms)",
+            180,
+            new ConfigDescription(
+                "按下时长超过该毫秒数视为「长按」（开轮盘），否则视为「轻按」（装弹）。\n" +
+                "\n" +
+                "Press-and-hold longer than this opens the wheel; a shorter tap reloads.",
+                new AcceptableValueRange<int>(100, 500)));
+
+        WheelFallbackKey = Config.Bind(
+            "7. 弹药轮盘 | Ammo Wheel",
+            "备用装填键 (Fallback Reload Key)",
+            KeyCode.R,
+            "仅当无法从游戏键位系统读取装填键实时状态时使用（优先跟随游戏内改键）。\n" +
+            "\n" +
+            "Used only as a fallback when the game key-bind state cannot be read (in-game rebinds take priority).");
 
         EnableMedAnimSync = Config.Bind(
             "2. 医疗动画 | Med Animation",
@@ -176,9 +227,9 @@ public class Plugin : BaseUnityPlugin
             "4. 调试 | Debug",
             "输出调试日志 (Debug Logging)",
             false,
-            "排查问题时开启（输出装弹 / 手术 / 动画的详细日志）。\n" +
+            "排查问题时开启（输出装弹 / 手术 / 动画 / 轮盘的详细日志）。\n" +
             "\n" +
-            "Enable verbose logging for troubleshooting (reload / surgery / animation details).");
+            "Enable verbose logging for troubleshooting (reload / surgery / animation / wheel details).");
 
         TryEnable("SoftcoreReload", () => new SoftcoreReloadPatch().Enable());
         TryEnable("MedAnimSpeed", () => new MedAnimSpeedPatch().Enable());
@@ -189,12 +240,64 @@ public class Plugin : BaseUnityPlugin
         TryEnable("FovSlider", () => new FovSliderPatch().Enable());
         TryEnable("FikaHostReloadMirror", () => new FikaHostReloadMirrorPatch().Enable());
         TryEnable("StateProbe", () => new StateProbePatch().Enable());
+        TryEnable("AmmoWheelCommandBlock", () => new AmmoWheelCommandBlockPatch().Enable());
+        TryEnable("AmmoWheelAxesBlock", () => new AmmoWheelAxesBlockPatch().Enable());
+        TryEnable("AmmoWheelCaptureTree", () => new AmmoWheelCaptureTreePatch().Enable());
+        TryEnable("AmmoWheelTranslatorCapture", () => new AmmoWheelTranslatorCapturePatch().Enable());
 
         Log.LogInfo(
             $"[DirectReload] Client plugin {PluginVersion} loaded — SPT 4.1 edition " +
-            $"(reloadFailureNotice: {EnableReloadFailureNotification.Value}, animScale: {MedAnimSpeedScale.Value}, " +
+            $"(reloadFailureNotice: {EnableReloadFailureNotification.Value}, ammoWheel: {EnableAmmoWheel.Value}, " +
+            $"wheelHoldMs: {WheelHoldMs.Value}, animScale: {MedAnimSpeedScale.Value}, " +
             $"batchSurgery: {EnableBatchSurgery.Value}, instantMagLoad: {InstantMagLoad.Value}, " +
             $"instantMagUnload: {InstantMagUnload.Value})");
+    }
+
+    /// <summary>每帧：战局边界重置 + 轮盘状态机 + Fika 桥 + 轮盘覆盖层。</summary>
+    private void Update()
+    {
+        try
+        {
+            var world = Singleton<GameWorld>.Instance;
+            if (!ReferenceEquals(world, _lastWorld))
+            {
+                _lastWorld = world;
+                AmmoSelectionState.ResetAll();
+                AmmoWheelController.ForceClose();
+            }
+
+            AmmoWheelController.PollKeys();
+            FikaAmmoSelectionBridge.Tick();
+
+            // 无头端（-batchmode / -nographics）不创建轮盘覆盖层
+            if (!Application.isBatchMode)
+            {
+                _wheelOverlay ??= new AmmoWheelOverlay();
+                _wheelOverlay.Update();
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_updateErrorLogged)
+            {
+                _updateErrorLogged = true;
+                Log.LogError($"[DirectReload] Update loop error (further errors suppressed): {ex}");
+            }
+        }
+    }
+
+    private void OnDestroy()
+    {
+        try
+        {
+            AmmoWheelController.ForceClose();
+            _wheelOverlay?.Dispose();
+            _wheelOverlay = null;
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning($"[DirectReload] teardown failed: {ex.Message}");
+        }
     }
 
     /// <summary>每个补丁独立启用：任何目标定位失败只记日志，不影响其它功能。</summary>
@@ -214,18 +317,26 @@ public class Plugin : BaseUnityPlugin
     /// <summary>
     /// 宿主端镜像提交调度：延迟到被观察玩家的换弹操作构建完成之后执行（不与操作集合相互干扰）。
     /// </summary>
-    internal void ScheduleMirrorCommit(InventoryController controller, Weapon weapon, Magazine magazine)
+    internal void ScheduleMirrorCommit(
+        InventoryController controller,
+        Weapon weapon,
+        Magazine magazine,
+        AmmoSelectionSnapshot selection)
     {
-        StartCoroutine(MirrorCommitRoutine(controller, weapon, magazine));
+        StartCoroutine(MirrorCommitRoutine(controller, weapon, magazine, selection));
     }
 
-    private System.Collections.IEnumerator MirrorCommitRoutine(InventoryController controller, Weapon weapon, Magazine magazine)
+    private System.Collections.IEnumerator MirrorCommitRoutine(
+        InventoryController controller,
+        Weapon weapon,
+        Magazine magazine,
+        AmmoSelectionSnapshot selection)
     {
         yield return new UnityEngine.WaitForSeconds(2.0f);
 
         try
         {
-            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "host-mirror");
+            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "host-mirror", selection);
             Log.LogInfo(
                 $"[DirectReload] host mirror commit done: failed={result.Failed}, " +
                 $"loaded={result.Loaded}");

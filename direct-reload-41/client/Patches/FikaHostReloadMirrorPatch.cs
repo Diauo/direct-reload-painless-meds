@@ -5,6 +5,7 @@ using Comfort.Common;
 using EFT;
 using EFT.InventoryLogic;
 using HarmonyLib;
+using RZDirectReload.Client.Fika;
 using SPT.Reflection.Patching;
 using UnityEngine;
 
@@ -76,7 +77,20 @@ internal class FikaHostReloadMirrorPatch : ModulePatch
             }
 
             Plugin.Log.LogInfo($"[DirectReload] host mirror armed: mag={magazine.Id}, weapon={weapon.Id}");
-            Plugin.Instance.ScheduleMirrorCommit(controller, weapon, magazine);
+
+            // 解析该玩家的弹药选择（客户端在换弹开始前已发来；缺失 → Auto + 警告）
+            var ownerId = controller.ID;
+            AmmoSelectionSnapshot selection;
+            if (!FikaAmmoSelectionBridge.TryGetForMirror(ownerId, out selection))
+            {
+                FikaAmmoSelectionBridge.WarnMissingForMirror(ownerId);
+                selection = AmmoSelectionSnapshot.Auto;
+            }
+
+            Plugin.Log.LogInfo(
+                $"[DirectReload] host mirror selection: " +
+                $"{(selection.Mode == AmmoSelectionMode.Explicit ? selection.TemplateId : "auto")}");
+            Plugin.Instance.ScheduleMirrorCommit(controller, weapon, magazine, selection);
         }
         catch (Exception ex)
         {
