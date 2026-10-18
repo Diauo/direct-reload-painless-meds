@@ -321,10 +321,22 @@ internal class SoftcoreReloadPatch : ModulePatch
                 return;
             }
 
-            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "post-animation", capturedSelection);
+            var createdIds = new List<string>();
+            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "post-animation", capturedSelection, createdIds);
             if (result.Failed)
             {
                 NotifyReloadFailure("Direct load after the animation failed", "动画完成后的装填失败", result.Error);
+            }
+            else if (createdIds.Count > 0)
+            {
+                try
+                {
+                    FikaAmmoSelectionBridge.SendIds(controller.ID, string.Join(",", createdIds));
+                }
+                catch (Exception sex)
+                {
+                    Dbg($"ids send failed: {sex.Message}");
+                }
             }
         }
         catch (Exception ex)

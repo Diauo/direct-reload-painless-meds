@@ -12,6 +12,9 @@ public interface IRzAmmoSelectionPacket
     string TemplateId { get; }
 
     bool IsAuto { get; }
+
+    /// <summary>新建物品 ID 清单（逗号分隔）；空 = 选择消息，非空 = ID 对齐消息。</summary>
+    string Ids { get; }
 }
 
 /// <summary>
@@ -83,6 +86,7 @@ internal static class FikaPacketEmitter
             var fieldOwner = tb.DefineField("_ownerId", typeof(string), FieldAttributes.Private);
             var fieldTemplate = tb.DefineField("_templateId", typeof(string), FieldAttributes.Private);
             var fieldAuto = tb.DefineField("_isAuto", typeof(bool), FieldAttributes.Private);
+            var fieldIds = tb.DefineField("_ids", typeof(string), FieldAttributes.Private);
 
             // 无参构造：字符串字段初始化为 ""（满足 new() 约束 + 空值安全）
             var ctor = tb.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
@@ -95,11 +99,15 @@ internal static class FikaPacketEmitter
             ctorIl.Emit(OpCodes.Ldarg_0);
             ctorIl.Emit(OpCodes.Ldstr, string.Empty);
             ctorIl.Emit(OpCodes.Stfld, fieldTemplate);
+            ctorIl.Emit(OpCodes.Ldarg_0);
+            ctorIl.Emit(OpCodes.Ldstr, string.Empty);
+            ctorIl.Emit(OpCodes.Stfld, fieldIds);
             ctorIl.Emit(OpCodes.Ret);
 
             DefineProperty(tb, "OwnerId", typeof(string), fieldOwner);
             DefineProperty(tb, "TemplateId", typeof(string), fieldTemplate);
             DefineProperty(tb, "IsAuto", typeof(bool), fieldAuto);
+            DefineProperty(tb, "Ids", typeof(string), fieldIds);
 
             // Serialize(NetDataWriter) — 顺序：OwnerId → TemplateId → IsAuto
             var serialize = tb.DefineMethod(
@@ -123,6 +131,11 @@ internal static class FikaPacketEmitter
             serIl.Emit(OpCodes.Ldarg_0);
             serIl.Emit(OpCodes.Ldfld, fieldAuto);
             serIl.Emit(OpCodes.Callvirt, putBool);
+            serIl.Emit(OpCodes.Ldarg_1);
+            serIl.Emit(OpCodes.Ldarg_0);
+            serIl.Emit(OpCodes.Ldfld, fieldIds);
+            serIl.Emit(OpCodes.Ldc_I4_0);
+            serIl.Emit(OpCodes.Callvirt, putString);
             serIl.Emit(OpCodes.Ret);
 
             // Deserialize(NetDataReader)
@@ -145,6 +158,10 @@ internal static class FikaPacketEmitter
             desIl.Emit(OpCodes.Ldarg_1);
             desIl.Emit(OpCodes.Callvirt, getBool);
             desIl.Emit(OpCodes.Stfld, fieldAuto);
+            desIl.Emit(OpCodes.Ldarg_0);
+            desIl.Emit(OpCodes.Ldarg_1);
+            desIl.Emit(OpCodes.Callvirt, getString);
+            desIl.Emit(OpCodes.Stfld, fieldIds);
             desIl.Emit(OpCodes.Ret);
 
             _packetType = tb.CreateType();

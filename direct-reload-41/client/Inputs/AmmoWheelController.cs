@@ -119,6 +119,21 @@ internal static class AmmoWheelController
         var candidates = AmmoWheelKeyState.GetCandidateKeys(out var keyDetail);
         bool down = AmmoWheelKeyState.ReadDown(candidates, out var readDetail);
 
+        // UI 遮挡（背包/容器/菜单打开中）：装填键归 UI 使用（例如 R 旋转物品），手势不介入。
+        if (IsUiBlocking())
+        {
+            if (_keyWasDown || _phase != Phase.Idle)
+            {
+                SoftcoreReloadPatch.Dbg("gesture: aborted (ui open — inventory/menu)");
+            }
+
+            _phase = Phase.Idle;
+            _pressTime = -1f;
+            _pendingCommandAt = null;
+            _keyWasDown = false;
+            return;
+        }
+
         if (down && !_keyWasDown)
         {
             OnKeyDown(now, keyDetail, readDetail);
@@ -166,6 +181,55 @@ internal static class AmmoWheelController
         _phase = Phase.Idle;
         _pendingCommandAt = null;
         _keyWasDown = false;
+    }
+
+    // ── UI 遮挡 ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 是否有 UI 遮挡（背包 / 容器 / 搜刮 / 菜单打开中）：此时装填键的语义归 UI
+    /// （例如背包里 R = 旋转物品），本 mod 的手势不介入。
+    /// 判定三合一（任一成立即视为遮挡）：玩家背包标志 ∪ 手部控制器 IsInventoryOpen()
+    /// （游戏自身判定：手部处于背包姿态）∪ 光标未锁定。轮盘自身展开时除外。
+    /// </summary>
+    private static bool IsUiBlocking()
+    {
+        if (AmmoWheelGate.IsOpen)
+        {
+            return false;
+        }
+
+        try
+        {
+            var player = GamePlayerOwner.MyPlayer;
+            if (player != null)
+            {
+                if (player.IsInventoryOpened)
+                {
+                    return true;
+                }
+
+                var hands = player.HandsController as Player.FirearmController;
+                if (hands != null && hands.IsInventoryOpen())
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // ignore — 走光标兜底
+        }
+
+        try
+        {
+            // 只用可见性：战斗/瞄准时光标不可见；背包/菜单等需要光标时可见。
+            // （不用 lockState —— 战斗态锁态并非必然 Locked，避免误判把正常装填也拦掉）
+            return Cursor.visible;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ── 手势边缘 ────────────────────────────────────────────
@@ -259,6 +323,12 @@ internal static class AmmoWheelController
 
     private static void RunTapReload()
     {
+        if (IsUiBlocking())
+        {
+            SoftcoreReloadPatch.Dbg("tap reload skipped: ui open");
+            return;
+        }
+
         var instance = ResolveInstance();
         if (instance == null)
         {
@@ -286,6 +356,13 @@ internal static class AmmoWheelController
 
     private static void TryOpenWheel()
     {
+        if (IsUiBlocking())
+        {
+            _phase = Phase.Idle;
+            SoftcoreReloadPatch.Dbg("wheel open skipped: ui open");
+            return;
+        }
+
         var instance = ResolveInstance();
         if (instance == null)
         {

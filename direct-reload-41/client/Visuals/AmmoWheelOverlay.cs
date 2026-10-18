@@ -40,6 +40,7 @@ internal sealed class AmmoWheelOverlay : IDisposable
     private Font? _font;
     private bool? _shown;
     private bool _createFailed;
+    private bool _updateErrorLogged;
 
     private readonly List<Text> _labels = new();
     private readonly List<string> _pendingTexts = new();
@@ -73,19 +74,30 @@ internal sealed class AmmoWheelOverlay : IDisposable
 
         CursorGate.Maintain();
 
-        _graphic!.Clear();
-        _pendingTexts.Clear();
-        _pendingPositions.Clear();
-        _pendingColors.Clear();
-        _pendingSprites.Clear();
-        _pendingIconPositions.Clear();
-        _pendingIconColors.Clear();
+        try
+        {
+            _graphic!.Clear();
+            _pendingTexts.Clear();
+            _pendingPositions.Clear();
+            _pendingColors.Clear();
+            _pendingSprites.Clear();
+            _pendingIconPositions.Clear();
+            _pendingIconColors.Clear();
 
-        DrawWheel();
+            DrawWheel();
 
-        _graphic.Apply();
-        FlushLabels();
-        FlushIcons();
+            _graphic.Apply();
+            FlushLabels();
+            FlushIcons();
+        }
+        catch (Exception ex)
+        {
+            if (!_updateErrorLogged)
+            {
+                _updateErrorLogged = true;
+                Plugin.Log.LogError($"[DirectReload] wheel overlay update failed: {ex}");
+            }
+        }
     }
 
     private static bool IsInRaidOperable()
@@ -305,6 +317,11 @@ internal sealed class AmmoWheelOverlay : IDisposable
 
     private void FlushLabels()
     {
+        if (_font == null)
+        {
+            _font = LoadFont();
+        }
+
         while (_labels.Count < _pendingTexts.Count)
         {
             _labels.Add(CreateLabel());
@@ -331,6 +348,11 @@ internal sealed class AmmoWheelOverlay : IDisposable
             }
 
             label.color = _pendingColors[i];
+
+            if (label.font != _font)
+            {
+                label.font = _font;
+            }
 
             var rect = (RectTransform)label.transform;
             var position = _pendingPositions[i];
@@ -444,6 +466,13 @@ internal sealed class AmmoWheelOverlay : IDisposable
         {
             return true;
         }
+
+        // 上一场战局遗留：场景卸载会销毁 canvas 及其全部子物体，池里的 Text/Image
+        // 全成了已销毁对象（访问即 MissingReferenceException → 标签/图标整体不渲染，
+        // 只剩空轮盘）。重建时清空池 + 重置显示状态，子物体随新 canvas 全部重建。
+        _labels.Clear();
+        _icons.Clear();
+        _shown = null;
 
         try
         {

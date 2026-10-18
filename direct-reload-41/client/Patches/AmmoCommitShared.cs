@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Comfort.Common;
+using EFT;
 using EFT.InventoryLogic;
 
 namespace RZDirectReload.Client.Patches;
@@ -63,12 +64,13 @@ internal static class AmmoCommit
         return total;
     }
 
-    /// <summary>复刻原版 CommitReloadWithAmmo：逐发 LoadAmmo 后 RaiseEvents(Begin/Succeed)。两端各自本地执行。</summary>
+    /// <summary>复刻原版 CommitReloadWithAmmo：逐发 LoadAmmo 后 RaiseEvents(Begin/Succeed)。两端各自本地执行（ID 生成器可注入对齐）。</summary>
     internal static DirectLoadResult FillMagazine(
         InventoryController controller,
         Magazine magazine,
         List<Ammo> sourcePiles,
-        int maxLoad)
+        int maxLoad,
+        IDatabaseIdGenerator? idGenerator = null)
     {
         var livePiles = new List<Ammo>();
         var available = 0;
@@ -123,7 +125,7 @@ internal static class AmmoCommit
             {
                 var beforeStep = magazine.Count;
                 var loadOp = pack.LoadAmmo(
-                    controller,
+                    idGenerator ?? controller,
                     controller,
                     magazine.Cartridges.CreateItemAddress());
 
@@ -251,8 +253,86 @@ internal static class AmmoCommit
         }
     }
 
-    /// <summary>动画后补上膛（复刻原版空弹匣路径）：弹匣 -1、膛内 +1。两端各自本地执行。</summary>
-    internal static void ChamberRound(Weapon weapon, InventoryController controller, Magazine magazine)
+    // ── ID 对齐（双端物品身份一致） ────────────────────────
+
+    /// <summary>记录型生成器（客户端）：透传真实生成器并记录每个新建物品 ID（供宿主强制对齐）。</summary>
+    private sealed class RecordingIdGenerator : IDatabaseIdGenerator
+    {
+        private readonly IDatabaseIdGenerator _inner;
+        private readonly List<string> _sink;
+
+        internal RecordingIdGenerator(IDatabaseIdGenerator inner, List<string> sink)
+        {
+            _inner = inner;
+            _sink = sink;
+        }
+
+        public MongoID NextId
+        {
+            get
+            {
+                var id = _inner.NextId;
+                _sink.Add(id.ToString());
+                return id;
+            }
+        }
+
+        public void RollBack()
+        {
+            _inner.RollBack();
+        }
+    }
+
+    /// <summary>强制型生成器（宿主镜像）：按客户端记录的顺序强制生成相同物品 ID；耗尽后回退随机生成并警告。</summary>
+    private sealed class ForcedIdGenerator : IDatabaseIdGenerator
+    {
+        private readonly IReadOnlyList<string> _ids;
+        private readonly IDatabaseIdGenerator _inner;
+        private bool _exhaustWarned;
+        private int _index;
+
+        internal ForcedIdGenerator(IReadOnlyList<string> ids, IDatabaseIdGenerator inner)
+        {
+            _ids = ids;
+            _inner = inner;
+        }
+
+        public MongoID NextId
+        {
+            get
+            {
+                if (_index < _ids.Count)
+                {
+                    var raw = _ids[_index++];
+                    try
+                    {
+                        return new MongoID(raw);
+                    }
+                    catch (Exception ex)
+                    {
+                        SoftcoreReloadPatch.Dbg($"forced id parse failed ({raw}): {ex.Message}");
+                    }
+                }
+
+                if (!_exhaustWarned)
+                {
+                    _exhaustWarned = true;
+                    Plugin.Log.LogWarning(
+                        "[DirectReload] host mirror: forced id list exhausted — falling back to random ids (possible drift)");
+                }
+
+                return _inner.NextId;
+            }
+        }
+
+        public void RollBack()
+        {
+            _inner.RollBack();
+        }
+    }
+
+    /// <summary>动画后补上膛（复刻原版空弹匣路径）：弹匣 -1、膛内 +1。两端各自本地执行（ID 生成器可注入对齐）。</summary>
+    internal static void ChamberRound(Weapon weapon, InventoryController controller, Magazine magazine, IDatabaseIdGenerator? idGenerator = null)
     {
         try
         {
@@ -267,15 +347,27 @@ internal static class AmmoCommit
                 return;
             }
 
-            var pop = magazine.Cartridges.PopTo(controller, chamber.CreateItemAddress());
-            if (pop.Failed)
+            if (magazine.Cartridges.Last is not Ammo top || top.StackObjectsCount <= 0)
             {
-                SoftcoreReloadPatch.Dbg($"chamber round failed: {pop.Error}");
                 return;
             }
 
-            pop.Value.RaiseEvents(controller, CommandStatus.Begin);
-            pop.Value.RaiseEvents(controller, CommandStatus.Succeed);
+            // 与原版 PopTo 等价（PopTo 内部即 SplitExact(item, 1, to)），但生成器可注入以强制 ID 对齐。
+            var split = ItemManipulator.SplitExact(
+                top,
+                1,
+                chamber.CreateItemAddress(),
+                controller,
+                idGenerator ?? controller,
+                simulate: false);
+            if (split.Failed)
+            {
+                SoftcoreReloadPatch.Dbg($"chamber round failed: {split.Error}");
+                return;
+            }
+
+            split.Value.RaiseEvents(controller, CommandStatus.Begin);
+            split.Value.RaiseEvents(controller, CommandStatus.Succeed);
 
             SoftcoreReloadPatch.Dbg(
                 $"chambered after reload: mag={magazine.Count}/{magazine.MaxCount}, chamber={weapon.ChamberAmmoCount}");
@@ -338,14 +430,31 @@ internal static class AmmoCommit
         }
     }
 
-    /// <summary>重新取堆 → 按选择排序 → 填满弹匣 → 补膛 → 记录最后使用（客户端回调与 Fika 宿主镜像共用）。</summary>
+    /// <summary>
+    /// 重新取堆 → 按选择排序 → 填满弹匣 → 补膛 → 记录最后使用（客户端回调与 Fika 宿主镜像共用）。
+    /// ID 对齐：客户端传入 createdIdsSink 记录本次新建物品 ID 的顺序清单（提交后随封包发给宿主）；
+    /// 宿主镜像传入 forcedIds，按客户端记录的顺序强制生成相同 ID —— 双端物品身份一致，
+    /// 后续任何引用这些物品的联网操作都不会再被宿主以 "Could not find item" 拒绝。
+    /// </summary>
     internal static DirectLoadResult CommitAfterReload(
         InventoryController controller,
         Magazine magazine,
         Weapon weapon,
         string stage,
-        AmmoSelectionSnapshot selection)
+        AmmoSelectionSnapshot selection,
+        List<string>? createdIdsSink = null,
+        IReadOnlyList<string>? forcedIds = null)
     {
+        IDatabaseIdGenerator? idGenerator = null;
+        if (forcedIds != null && forcedIds.Count > 0)
+        {
+            idGenerator = new ForcedIdGenerator(forcedIds, controller);
+        }
+        else if (createdIdsSink != null)
+        {
+            idGenerator = new RecordingIdGenerator(controller, createdIdsSink);
+        }
+
         // 1) 先卸空弹匣：退出全部旧弹药（移回口袋/弹挂/背包；两端各自执行同一操作，指令序确定）
         var unloadError = UnloadMagazine(controller, magazine);
         if (unloadError != null)
@@ -362,7 +471,7 @@ internal static class AmmoCommit
         var firstLive = ordered.FirstOrDefault(
             a => a != null && a.StackObjectsCount > 0 && a.CurrentAddress != null);
 
-        var result = FillMagazine(controller, magazine, ordered, int.MaxValue);
+        var result = FillMagazine(controller, magazine, ordered, int.MaxValue, idGenerator);
         SoftcoreReloadPatch.LogDirectLoad(stage, magazine, result);
         if (result.Failed)
         {
@@ -374,7 +483,7 @@ internal static class AmmoCommit
             AmmoSelectionState.MarkLastUsed(firstLive);
         }
 
-        ChamberRound(weapon, controller, magazine);
+        ChamberRound(weapon, controller, magazine, idGenerator);
         return result;
     }
 }

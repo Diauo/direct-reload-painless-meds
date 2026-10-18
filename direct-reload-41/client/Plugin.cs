@@ -35,7 +35,7 @@ public class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "com.rz99.directreload.client";
     public const string PluginName = "Direct Reload & Painless Meds";
-    public const string PluginVersion = "1.3.0";
+    public const string PluginVersion = "1.3.1";
 
     internal static Plugin Instance = null!;
 
@@ -332,18 +332,48 @@ public class Plugin : BaseUnityPlugin
         Magazine magazine,
         AmmoSelectionSnapshot selection)
     {
-        yield return new UnityEngine.WaitForSeconds(2.0f);
+        yield return new UnityEngine.WaitForSeconds(1.0f);
 
+        // ID 清单 = "客户端确实做了直装提交"的唯一凭据（原版换弹 / 未提交 → 无清单）。
+        // 只等清单；等到才提交（且强制对齐）；等不到就跳过 —— 绝不无对齐幽灵提交
+        // （幽灵提交会在宿主侧制造客户端不知情的弹堆 → 后续操作 "Could not find item"）。
+        var deadline = UnityEngine.Time.realtimeSinceStartup + 6f;
+        while (!FikaAmmoSelectionBridge.HasIdsForMirror(controller.ID)
+               && UnityEngine.Time.realtimeSinceStartup < deadline)
+        {
+            yield return null;
+        }
+
+        if (!FikaAmmoSelectionBridge.TakeIdsForMirror(controller.ID, out var csv) || string.IsNullOrEmpty(csv))
+        {
+            if (!_idSkipLogged)
+            {
+                _idSkipLogged = true;
+                Log.LogInfo(
+                    "[DirectReload] host mirror skipped: no client commit ids " +
+                    "(vanilla reload or lost packet) — host left untouched");
+            }
+            else
+            {
+                SoftcoreReloadPatch.Dbg("host mirror skipped (no ids)");
+            }
+
+            yield break;
+        }
+
+        var forcedIds = csv!.Split(',');
         try
         {
-            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "host-mirror", selection);
+            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "host-mirror", selection, null, forcedIds);
             Log.LogInfo(
                 $"[DirectReload] host mirror commit done: failed={result.Failed}, " +
-                $"loaded={result.Loaded}");
+                $"loaded={result.Loaded}, alignedIds={forcedIds.Length}");
         }
         catch (Exception ex)
         {
             Log.LogError($"[DirectReload] Host mirror commit failed: {ex}");
         }
     }
+
+    private bool _idSkipLogged;
 }

@@ -21,6 +21,7 @@ internal static class FikaAmmoSelectionBridge
     {
         internal string? TemplateId;
         internal bool IsAuto;
+        internal string? IdsCsv;
     }
 
     private static readonly Dictionary<string, StoredSelection> _store = new();
@@ -174,6 +175,108 @@ internal static class FikaAmmoSelectionBridge
         }
     }
 
+    /// <summary>客户端侧：提交完成后发送本次新建物品 ID 清单（逗号分隔；宿主镜像强制对齐用）。</summary>
+    internal static void SendIds(string ownerId, string idsCsv)
+    {
+        try
+        {
+            EnsureResolution();
+            if (_managerInterfaceType == null || _sendDataOpenGeneric == null)
+            {
+                return; // 无 Fika：单机无需发送
+            }
+
+            if (string.IsNullOrEmpty(ownerId) || string.IsNullOrEmpty(idsCsv))
+            {
+                return;
+            }
+
+            var isClient = ReadBackendFlag("IsClient");
+            if (isClient != true)
+            {
+                return; // 仅客户端发送
+            }
+
+            var packetType = FikaPacketEmitter.PacketType;
+            if (packetType == null)
+            {
+                WarnOnce(ref _sendWarned, $"ids send skipped: {FikaPacketEmitter.Failure ?? "packet type unavailable"}");
+                return;
+            }
+
+            var manager = GetManager();
+            if (manager == null)
+            {
+                return;
+            }
+
+            var packet = Activator.CreateInstance(packetType);
+            if (packet == null)
+            {
+                return;
+            }
+
+            SetProperty(packetType, packet, "OwnerId", ownerId);
+            SetProperty(packetType, packet, "TemplateId", string.Empty);
+            SetProperty(packetType, packet, "IsAuto", true);
+            SetProperty(packetType, packet, "Ids", idsCsv);
+
+            var deliveryType = FikaPacketEmitter.FindType("Fika.Core.Networking.LiteNetLib.DeliveryMethod");
+            var reliableOrdered = deliveryType != null ? Enum.Parse(deliveryType, "ReliableOrdered") : null;
+            if (reliableOrdered == null)
+            {
+                return;
+            }
+
+            var send = _sendDataOpenGeneric.MakeGenericMethod(packetType);
+            send.Invoke(manager, new object[] { packet!, reliableOrdered, false });
+        }
+        catch (Exception ex)
+        {
+            WarnOnce(ref _sendWarned, $"ids send failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>宿主镜像侧：该玩家的 ID 清单是否已到达。</summary>
+    internal static bool HasIdsForMirror(string ownerId)
+    {
+        try
+        {
+            return !string.IsNullOrEmpty(ownerId)
+                   && _store.TryGetValue(ownerId, out var stored)
+                   && stored != null
+                   && !string.IsNullOrEmpty(stored.IdsCsv);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>宿主镜像侧：取走该玩家的 ID 清单（一次性消费）。</summary>
+    internal static bool TakeIdsForMirror(string ownerId, out string? csv)
+    {
+        csv = null;
+        try
+        {
+            if (!string.IsNullOrEmpty(ownerId)
+                && _store.TryGetValue(ownerId, out var stored)
+                && stored != null
+                && !string.IsNullOrEmpty(stored.IdsCsv))
+            {
+                csv = stored.IdsCsv;
+                stored.IdsCsv = null;
+                return true;
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return false;
+    }
+
     /// <summary>宿主镜像侧：取该玩家的选择；返回 false = 未命中（调用方回退 Auto + 警告）。</summary>
     internal static bool TryGetForMirror(string ownerId, out AmmoSelectionSnapshot snapshot)
     {
@@ -236,12 +339,25 @@ internal static class FikaAmmoSelectionBridge
                     return;
                 }
 
-                _store[ownerId] = new StoredSelection
+                if (!_store.TryGetValue(ownerId, out var stored) || stored == null)
                 {
-                    TemplateId = selection.TemplateId,
-                    IsAuto = selection.IsAuto,
-                };
-                SoftcoreReloadPatch.Dbg($"selection packet received: owner={ownerId}, template={selection.TemplateId}, auto={selection.IsAuto}");
+                    stored = new StoredSelection();
+                    _store[ownerId] = stored;
+                }
+
+                if (string.IsNullOrEmpty(selection.Ids))
+                {
+                    // 选择消息
+                    stored.TemplateId = selection.TemplateId;
+                    stored.IsAuto = selection.IsAuto;
+                    SoftcoreReloadPatch.Dbg($"selection packet received: owner={ownerId}, template={selection.TemplateId}, auto={selection.IsAuto}");
+                }
+                else
+                {
+                    // ID 对齐消息（勿覆盖选择字段）
+                    stored.IdsCsv = selection.Ids;
+                    SoftcoreReloadPatch.Dbg($"ids packet received: owner={ownerId}, ids={selection.Ids.Split(',').Length}");
+                }
             }
         }
         catch (Exception ex)
