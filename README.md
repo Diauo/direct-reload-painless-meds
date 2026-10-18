@@ -10,7 +10,7 @@ Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine
 
 | SPT version | Mod version | Client artifact | Server artifact |
 |---|---|---|---|
-| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.3.1** | `direct-reload-41/client` | `direct-reload-41/server` |
+| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.3.2** | `direct-reload-41/client` | `direct-reload-41/server` |
 | **SPT 4.0.x** (EFT 0.16.9.40087) | v1.2.0 (frozen) | `direct-reload/client` | `direct-reload/server` |
 
 The **4.1 line is actively maintained**; the **4.0 line is frozen at v1.2.0** and no longer receives updates.

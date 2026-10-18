@@ -344,6 +344,14 @@ internal static class AmmoWheelController
             return;
         }
 
+        // 非直装武器（内置管仓/转轮等）：命令路径已按原版执行（前缀放行），
+        // 手势轻按不再重复转发，避免双重换弹。
+        if (!SoftcoreReloadPatch.IsDirectLoadCapable(weapon))
+        {
+            SoftcoreReloadPatch.Dbg("tap skipped: not direct-load capable (command path handles vanilla)");
+            return;
+        }
+
         bool result = true;
         bool vanilla = SoftcoreReloadPatch.TrySoftcoreReload(instance, weapon, ref result);
         if (vanilla)

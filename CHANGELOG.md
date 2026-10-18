@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.2
+- **Fixed — internal-magazine & cylinder weapons:** the Marlin M1894 lever-action, the RSH-12 revolver and any other weapon whose magazine cannot be detached in raid no longer attempt the direct-reload magazine dance — they keep the **vanilla one-by-one loading** instead of ending in a failed reload transaction. The direct-load applicability check now mirrors the game's own in-raid movement rules (magazine slot is not a vital part, magazine is raid-moddable, no "cannot remove from slots during raid" component).
+
 ## 1.3.1
 - **Fixed — Fika inventory identity:** after a direct reload in a Fika session, later inventory actions on the refilled rounds (unloading magazines, moving or dropping rounds/magazines) could be rejected by the host with `Could not find item with id`. The client now records the item IDs it creates while refilling, and the host mirror recreates them with the **same IDs** — both sides stay identical.
 - **Fixed — no more phantom host commits:** the host mirror now only runs when the client's commit signal (created-ID list) arrives. Vanilla spare-magazine reloads no longer trigger a host-side mirror commit.

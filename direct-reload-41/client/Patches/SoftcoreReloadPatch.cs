@@ -44,6 +44,75 @@ internal class SoftcoreReloadPatch : ModulePatch
         return _targetMethod;
     }
 
+    /// <summary>
+    /// 直装适用性判定（与游戏自身的战局内移动规则同一把尺，ItemManipulator.MovePathCheck）：
+    ///   ① 武器必须是外置弹匣类（ExternalMagazine / EXWIRS）；
+    ///   ② 弹匣所在槽位不是"关键部件"（Required）——内置管仓（Marlin M1894 等）在战局内不可拆；
+    ///   ③ 弹匣本体可战局内拆卸（RaidModdable）——转轮（RSH-12 等）不可；
+    ///   ④ 无"战局内禁止从槽位移除"组件。
+    /// 不适用 → 保持原版逐发装填（绝不执行直装的"弹匣拆装舞蹈"）。
+    /// </summary>
+    internal static bool IsDirectLoadCapable(Weapon weapon)
+    {
+        try
+        {
+            if (weapon == null)
+            {
+                return false;
+            }
+
+            if (weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazine
+                && weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazineWithInternalReloadSupport)
+            {
+                return false;
+            }
+
+            var magazine = weapon.GetCurrentMagazine();
+            if (magazine == null)
+            {
+                return false;
+            }
+
+            if (magazine.Parent?.Container is Slot slot && slot.Required)
+            {
+                return false;
+            }
+
+            if (magazine is Mod { RaidModdable: false })
+            {
+                return false;
+            }
+
+            // ④ 战局内禁止从槽位移除的组件（运行时反射检查——该组件类型位于拆分程序集，编译期不引用）
+            try
+            {
+                var componentType = AccessTools.TypeByName("EFT.InventoryLogic.CantRemoveFromSlotsDuringRaidComponent");
+                var getter = typeof(Item)
+                    .GetMethods()
+                    .FirstOrDefault(m => m.Name == "GetItemComponent" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+                if (componentType != null && getter != null)
+                {
+                    var result = getter.MakeGenericMethod(componentType).Invoke(magazine, null);
+                    if (result != null)
+                    {
+                        return false;
+                    }
+                }
+            }
+            catch
+            {
+                // 反射失败按"无组件"处理（保守方向：不因反射问题误伤直装；①②③仍完整生效）
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Dbg($"capability check failed ({ex.Message}) → vanilla");
+            return false;
+        }
+    }
+
     [PatchPrefix]
     private static bool Prefix(FirearmHandsInputTranslator __instance, Weapon weapon, bool quickReload, ref bool __result)
     {
@@ -67,10 +136,9 @@ internal class SoftcoreReloadPatch : ModulePatch
                 return true;
             }
 
-            if (weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazine
-                && weapon.ReloadMode != Weapon.EReloadMode.ExternalMagazineWithInternalReloadSupport)
+            if (!IsDirectLoadCapable(weapon))
             {
-                Dbg($"exit: reload mode={weapon.ReloadMode} (not ExternalMagazine / EXWIRS)");
+                Dbg($"exit: not direct-load capable (mode={weapon.ReloadMode}) → vanilla");
                 return true;
             }
 
@@ -131,6 +199,12 @@ internal class SoftcoreReloadPatch : ModulePatch
         if (magazine == null)
         {
             Dbg("exit: magazine null");
+            return true;
+        }
+
+        if (!IsDirectLoadCapable(weapon))
+        {
+            Dbg("exit: not direct-load capable (guard) → vanilla");
             return true;
         }
 
