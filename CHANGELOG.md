@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.3
+- **Fixed — belt (BeltSlot) ammunition was invisible to direct loading:** the direct-load, ammo-wheel and unload queries only searched the game's default reachable slots (pockets + tactical vest). The belt added by **BeltSlot** occupies the **ArmBand** slot, so loose rounds and magazines stored on the belt could not be used. The ammo query now builds its slot list explicitly — the game's `FastAccessSlots` (so a PackNStrap-provided replacement is honoured) **plus `ArmBand`**, de-duplicated and filtered to slots that exist on the equipment — and calls `GetAcceptableItemsNonAlloc`. Applies to the client and the Fika host mirror alike.
+- No other behaviour changes; server version bumped for release consistency.
+
 ## 1.3.2
 - **Fixed — internal-magazine & cylinder weapons:** the Marlin M1894 lever-action, the RSH-12 revolver and any other weapon whose magazine cannot be detached in raid no longer attempt the direct-reload magazine dance — they keep the **vanilla one-by-one loading** instead of ending in a failed reload transaction. The direct-load applicability check now mirrors the game's own in-raid movement rules (magazine slot is not a vital part, magazine is raid-moddable, no "cannot remove from slots during raid" component).
 

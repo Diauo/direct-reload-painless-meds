@@ -33,21 +33,69 @@ internal static class AmmoCommit
         public bool Failed => Error != null;
     }
 
-    /// <summary>可触及的兼容弹药堆（原生同源：FastAccessSlots），按物品 ID 排序保证跨端确定性。
+    /// <summary>可触及的兼容弹药堆（原生同源 FastAccessSlots + 腰带所在的手环槽），按物品 ID 排序保证跨端确定性。
+    /// 用 GetAcceptableItemsNonAlloc 显式传槽位——不要用 GetReachableItemsOfTypeNonAlloc：
+    /// 后者只认原版 FastAccessSlots = 口袋+弹挂，腰带（ArmBand 槽）搜不到，
+    /// 且 UseItemsAnywhere 只改写游戏本体调用点、覆盖不到本 mod 自己的查询。
     /// 兼容链 = 弹匣可装 ∧ 武器枪膛可接纳（排除"弹匣能装但枪打不了"的弹药，如 5.56 枪 + .300 弹）。</summary>
     internal static List<Ammo> FindReachablePiles(InventoryController controller, Magazine magazine, Weapon? weapon = null)
     {
         var piles = new List<Ammo>();
-        controller.GetReachableItemsOfTypeNonAlloc(
+        controller.GetAcceptableItemsNonAlloc(
+            BuildReachableSlots(controller),
             piles,
             ammo => ammo.StackObjectsCount > 0
                     && controller.Examined(ammo)
                     && ammo.CheckAction(null).Succeeded
                     && magazine.CheckCompatibility(ammo)
-                    && WeaponAccepts(weapon, ammo));
+                    && WeaponAccepts(weapon, ammo),
+            null);
 
         piles.Sort((a, b) => string.CompareOrdinal(a.Id.ToString(), b.Id.ToString()));
         return piles;
+    }
+
+    /// <summary>可触及槽位 = 游戏原生 FastAccessSlots（若 PackNStrap 等模组替换了该静态字段则自然继承）
+    /// + 手环槽 ArmBand（BeltSlot 腰带占用此槽）。只保留当前装备上确实存在的槽位，
+    /// 避免 modded/bot 装备槽位缓存不完整导致的越界/空引用。</summary>
+    private static EquipmentSlot[] BuildReachableSlots(InventoryController controller)
+    {
+        var wanted = new List<EquipmentSlot>();
+        var baseSlots = Inventory.FastAccessSlots;
+        if (baseSlots != null)
+        {
+            foreach (var slot in baseSlots)
+            {
+                if (!wanted.Contains(slot))
+                {
+                    wanted.Add(slot);
+                }
+            }
+        }
+
+        if (!wanted.Contains(EquipmentSlot.ArmBand))
+        {
+            wanted.Add(EquipmentSlot.ArmBand);
+        }
+
+        var equipment = controller.Inventory.Equipment;
+        var reachable = new List<EquipmentSlot>(wanted.Count);
+        foreach (var slot in wanted)
+        {
+            try
+            {
+                if (equipment.GetSlot(slot) != null)
+                {
+                    reachable.Add(slot);
+                }
+            }
+            catch
+            {
+                // 当前装备无此槽（modded/bot 装备缓存更短）→ 跳过
+            }
+        }
+
+        return reachable.ToArray();
     }
 
     internal static int CountLiveRounds(List<Ammo> piles)
