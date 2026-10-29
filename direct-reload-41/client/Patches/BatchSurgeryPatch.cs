@@ -14,6 +14,12 @@ namespace RZDirectReload.Client.Patches;
 ///   （4.0: GClass3010.method_7 —— 语义不变）。
 /// 机制：在"手术目标确定"后挂 BodyPartRestoredEvent 恢复链；首个肢体恢复完成 → 一次性同步恢复所有黑肢
 /// （每个消耗 1 点耐久）。触发方式稳定：快捷键 / 双击 / 右键菜单 / 拖拽均生效（无条件批量）。
+///
+/// 耐久校验/退款思路参考：Kirisame dish (kirisamepositive) — RZMedTiming (MIT)
+///   https://github.com/WYYQWQ1/SPT-RZMedTiming
+///   ①「先恢复 → 回读 IsBodyPartDestroyed → 确认治好才扣」，异常绝不扣，写绝对值防二次扣；
+///   ②「一个肢体都没治好就被取消」时可选退还原版扣掉的 1 点耐久。
+///   本文件为独立实现；详见 ACKNOWLEDGEMENTS.md。
 /// </summary>
 internal class BatchSurgeryPatch : ModulePatch
 {

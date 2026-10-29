@@ -23,6 +23,11 @@ namespace RZDirectReload.Client.Patches;
 /// 清理：游戏在 RemoveHandsOperation.Start 里会 SetAnimationSpeed(1f)，无需我们恢复；同一预制体
 ///   下次使用时 Spawn 也会重设基线，因此不存在倍率残留。
 /// 范围：只处理本地玩家（bot / Fika 远端玩家也会走同一个 Spawn，必须用 IsYourPlayer 拦掉）。
+///
+/// Credit: 「技能加成取本地玩家现读、读不到按 0 绝不兜底 0.4」的做法参考
+///   Kirisame dish (kirisamepositive) — RZMedTiming (MIT) https://github.com/WYYQWQ1/SPT-RZMedTiming 。
+///   「别用 SetUseTimeMultiplier 驱动医疗动画」这一判断来自该 mod 内合并的
+///   QuickMeds（BLACK HAWK, MIT）代码注释；此处为独立实现。详见 ACKNOWLEDGEMENTS.md。
 /// </summary>
 internal class MedAnimatorSpeedPatch : ModulePatch
 {

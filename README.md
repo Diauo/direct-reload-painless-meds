@@ -138,6 +138,10 @@ Outputs:
 
 - **[SoftCoreMeds](https://github.com/QuietPillsHere/SPT-SoftCoreMeds)** by Doug (MIT License) — the batch-surgery feature in this mod was adapted from their surgical-kit implementation. Thanks for the open-source work!
 - **Fontaine's FOV Fix** ([space-commits/SPT-FOV-Fix](https://github.com/space-commits/SPT-FOV-Fix)) — the FOV-unlock mechanism (re-binding the settings slider and replacing the value clamp) was implemented after studying their approach; independently re-implemented and ported to 4.1. Thanks for the reference points!
+- **[txvicious](https://github.com/txvicious)** (MIT) — reported the reload hitch and shipped a reviewed companion packet in [issue #1](https://github.com/Diauo/direct-reload-painless-meds/issues/1). Two things in this mod come from that packet: the per-reload **ticket** that keeps overlapping reloads from mixing their ammo selection / created-item IDs, and the rule that the commit envelope must be sent even when a reload creates **zero new item IDs** (bulk stack moves). Their `KNOWN-ISSUES.md` also flagged the LIFO rollback order and the failed-step sync gap that this mod now handles.
+- **Kirisame dish ([kirisamepositive](https://github.com/WYYQWQ1)) — [RZMedTiming](https://github.com/WYYQWQ1/SPT-RZMedTiming)** (MIT) — two ideas for the medical layer were referenced and re-implemented here: reading the Surgery skill bonus from the **local player** at use time instead of trusting a shared cached value, and restoring a limb and then **reading its state back** so surgical-kit durability is charged only when the limb really healed (plus the optional refund when a surgery is cancelled before healing anything). Their mod also bundles QuickMeds by BLACK HAWK (MIT), whose notes are where the "do not drive medical animation through `SetUseTimeMultiplier`" conclusion came from.
+
+Details and per-file provenance: [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
 
 ## License
 MIT — see [LICENSE](LICENSE).

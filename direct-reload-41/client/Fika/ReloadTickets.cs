@@ -7,6 +7,10 @@ namespace RZDirectReload.Client.Fika;
 /// 每换弹票据（采纳社区维护包设计）：线上 owner 字段携带 "dr2:&lt;guid&gt;:&lt;owner&gt;" 形式的票据键，
 /// 把一次换弹的"选择"与"提交 ID 清单"绑定在一起；宿主侧按票据隔离待处理项，
 /// 防止两次重叠换弹的选择/ID 互相混淆或覆盖（旧实现每人只有一个待定槽）。
+///
+/// Credit: per-reload ticket scheme adopted from txvicious's reviewed companion packet
+/// (GitHub issue #1, MIT) — https://github.com/Diauo/direct-reload-painless-meds/issues/1
+/// Re-implemented inside this mod; see ACKNOWLEDGEMENTS.md.
 /// </summary>
 internal sealed class ReloadTickets
 {

@@ -13,6 +13,10 @@ namespace RZDirectReload.Client.Patches;
 /// 双方各自执行同一组游戏原生原语（同官方 CommitReloadWithAmmo 的 LoadAmmo / PopTo），
 /// 即得到一致的物品与数量。绝不要改走网络操作通道（作用于在手上武器弹匣的库存操作会被拒绝）。
 /// 弹药堆按物品 ID 排序，保证两端选取顺序完全确定。
+///
+/// Credit: the "every successful commit must send its envelope, including an empty created-ID
+/// list" rule was adopted from txvicious's reviewed companion packet (GitHub issue #1, MIT) —
+/// https://github.com/Diauo/direct-reload-painless-meds/issues/1 . See ACKNOWLEDGEMENTS.md.
 /// </summary>
 internal static class AmmoCommit
 {

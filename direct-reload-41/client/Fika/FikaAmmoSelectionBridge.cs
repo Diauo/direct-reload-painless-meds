@@ -13,6 +13,7 @@ namespace RZDirectReload.Client.Fika;
 /// Fika 选择同步桥（零编译依赖，全反射）：
 ///   · 客户端：换弹开始瞬间把「本轮选择」发给宿主（在 ReloadMag 之前，同一通道有序）；
 ///   · 宿主：惰性注册接收器，按玩家存储选择；镜像提交时取用（缺失 → Auto + 警告）。
+///   · 每换弹票据 / 空清单提交信封的设计参考 txvicious 的维护包（GitHub issue #1, MIT）；见 ACKNOWLEDGEMENTS.md。
 /// 单机 / 无 Fika 时全部为空操作。
 /// </summary>
 internal static class FikaAmmoSelectionBridge
