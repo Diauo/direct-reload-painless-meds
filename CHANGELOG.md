@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.1
+- **Fixed — food and drink were not actually faster:** the server only scaled `medUseTime`, but food and drink store their use time in a separate `foodUseTime` field, so eating stayed at vanilla speed while the (now accelerated) animation finished early. Food and drink are now scaled with the same multiplier and floor — everything you eat or drink is as fast as the animation you see. New server config switch `medUseTime.includeFood` (default `true`).
+
 ## 1.4.0
 - **New — medical animations now really accelerate (all items):** the animation speed is driven directly through `Animator.speed` instead of the `UseTimeMultiplier` animator parameter. Splints, tourniquets, injectors and pills play through completely and finish together with the treatment — previously their animation was cut off halfway and snapped back into the "put away" pose ("unfold half way, then folds back").
 - **New — surgery skill compensation:** the game shortens surgical treatment on a blacked-out limb by `1 + Surgery skill` but only passes `1 + skill / 100` to the animation. The animation multiplier is now corrected by that ratio, so a maxed Surgery skill no longer leaves the kit closing for a second after the limb is healed.

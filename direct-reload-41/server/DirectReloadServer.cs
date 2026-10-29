@@ -129,27 +129,39 @@ public class DirectReloadServer(
     private void ApplyMedUseTime(Dictionary<MongoId, TemplateItem> items, MedUseTimeSettings cfg)
     {
         var count = 0;
+        var foodCount = 0;
 
         foreach (var item in items.Values)
         {
             var props = item.Properties;
-            if (props?.MedUseTime is not double useTime || useTime <= 0)
+
+            // 食物 / 饮料用的是独立字段 foodUseTime（不是 medUseTime）——
+            // 不缩放它，进食时长仍是原版，而动画已被客户端加速，会出现"动画先放完、人还在吃"。
+            if (props?.MedUseTime is double useTime && useTime > 0)
             {
+                var multiplier = cfg.Multiplier;
+                if (cfg.SurgicalKitMultiplier is double surgicalMultiplier && IsSurgicalKit(item.Id))
+                {
+                    multiplier = surgicalMultiplier;
+                }
+
+                props.MedUseTime = Math.Max(cfg.MinSeconds, Math.Round(useTime * multiplier, 2));
+                count++;
                 continue;
             }
 
-            var multiplier = cfg.Multiplier;
-            if (cfg.SurgicalKitMultiplier is double surgicalMultiplier && IsSurgicalKit(item.Id))
+            if (cfg.IncludeFood && props?.FoodUseTime is double foodTime && foodTime > 0)
             {
-                multiplier = surgicalMultiplier;
+                props.FoodUseTime = Math.Max(cfg.MinSeconds, Math.Round(foodTime * cfg.Multiplier, 2));
+                foodCount++;
             }
-
-            var newTime = Math.Max(cfg.MinSeconds, Math.Round(useTime * multiplier, 2));
-            props.MedUseTime = newTime;
-            count++;
         }
 
         logger.Info($"[DirectReload] MedUseTime scaled on {count} items (x{cfg.Multiplier}, floor {cfg.MinSeconds}s)");
+        if (cfg.IncludeFood)
+        {
+            logger.Info($"[DirectReload] FoodUseTime scaled on {foodCount} items (x{cfg.Multiplier}, floor {cfg.MinSeconds}s)");
+        }
     }
 
     /// <summary>正面 buff 类型白名单（持续时间翻倍的目标）——不含副作用类型</summary>

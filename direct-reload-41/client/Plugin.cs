@@ -35,7 +35,7 @@ public class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "com.rz99.directreload.client";
     public const string PluginName = "Direct Reload & Painless Meds";
-    public const string PluginVersion = "1.4.0";
+    public const string PluginVersion = "1.4.1";
 
     internal static Plugin Instance = null!;
 

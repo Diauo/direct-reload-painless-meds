@@ -10,7 +10,7 @@ Tired of magazine Tetris mid-fight? **Direct Reload** lets you feed the magazine
 
 | SPT version | Mod version | Client artifact | Server artifact |
 |---|---|---|---|
-| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.4.0** | `direct-reload-41/client` | `direct-reload-41/server` |
+| **SPT 4.1.x** (EFT 0.16.9.5) | **v1.4.1** | `direct-reload-41/client` | `direct-reload-41/server` |
 | **SPT 4.0.x** (EFT 0.16.9.40087) | v1.2.0 (frozen) | `direct-reload/client` | `direct-reload/server` |
 
 The **4.1 line is actively maintained**; the **4.0 line is frozen at v1.2.0** and no longer receives updates.
@@ -31,7 +31,7 @@ The **4.1 line is actively maintained**; the **4.0 line is frozen at v1.2.0** an
 - **Unlock the FOV cap:** the in-game base-FOV setting is no longer capped at 75 — the slider and the value clamp use a configurable range instead (default 50–110). Toggleable in the F12 menu.
 
 ### Medical
-- **Faster medical use** (server-side): all meds are faster; multiplier configurable.
+- **Faster medical use — and food & drink** (server-side): every medical item *and* every food/drink item is faster, using the same configurable multiplier and floor. Food can be excluded with `medUseTime.includeFood` (note: the food animation is still client-accelerated, so leaving food enabled is what keeps animation and use time in step).
 - **Painless surgery:** surgical kits (CMS / Surv12 / Sanitar) restore blacked-out limbs **without the max-HP penalty**.
 - **Batch surgery:** one surgical-kit use treats **all** blacked-out limbs (1 durability per limb).
 - **Durability is only charged for limbs that actually healed:** every limb is restored, then read back — a limb that did not come back is never charged. Optional *Refund Durability On Cancel* returns the point when a surgery is interrupted before healing anything (off by default).
@@ -45,7 +45,7 @@ Fully multiplayer-safe. In Fika sessions the **host mirrors the reload fill/cham
 ---
 
 ## Requirements
-- **SPT 4.1.x** (EFT 0.16.9.5) → use v1.4.0 artifacts
+- **SPT 4.1.x** (EFT 0.16.9.5) → use v1.4.1 artifacts
 - **SPT 4.0.x** (EFT 0.16.9.40087) → frozen at v1.2.0 (no longer maintained)
 - BepInEx (bundled with SPT)
 

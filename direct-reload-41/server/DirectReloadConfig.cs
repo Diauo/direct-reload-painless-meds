@@ -78,4 +78,11 @@ public class MedUseTimeSettings
     /// </summary>
     [JsonPropertyName("surgicalKitMultiplier")]
     public double? SurgicalKitMultiplier { get; set; } = null;
+
+    /// <summary>
+    /// Also shorten food &amp; drink use time (the game stores it in `foodUseTime`, a separate field
+    /// from `medUseTime`). On by default so eating matches the accelerated animation.
+    /// </summary>
+    [JsonPropertyName("includeFood")]
+    public bool IncludeFood { get; set; } = true;
 }
