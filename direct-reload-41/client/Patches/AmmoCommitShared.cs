@@ -164,45 +164,115 @@ internal static class AmmoCommit
         // 2) 反向执行装填（低优先级先入匣 = 堆底部；目标弹药最后入匣 = 堆顶部）。
         //    塔科夫弹匣从顶部（Cartridges.Last）消耗——上膛与射击都取 Last——
         //    因此只有反向装填才能让“优先弹药先打、打完降级”，与选择语义一致。
+        //    批量执行：同型顶部弹堆可合时 Merge/TransferExact 整段转移，否则整堆 Move /
+        //    SplitExact 分段——一次原生操作代替逐发操作（30 发从 30 op/60 事件 → 1 op/2 事件）。
         var step = 0;
         for (var p = plan.Count - 1; p >= 0; p--)
         {
             var (pile, take) = plan[p];
-            var pack = new AmmoPack(new List<Ammo> { pile });
-            for (var i = 0; i < take; i++)
+            var remainingTake = take;
+            while (remainingTake > 0)
             {
                 var beforeStep = magazine.Count;
-                var loadOp = pack.LoadAmmo(
-                    idGenerator ?? controller,
-                    controller,
-                    magazine.Cartridges.CreateItemAddress());
+                var loadOp = LoadStack(controller, magazine, pile, remainingTake, idGenerator ?? controller, out var loadError, out var moved);
 
-                if (loadOp.Error != null)
+                if (loadOp == null || loadError != null)
                 {
                     return new DirectLoadResult(
                         requested,
                         available,
                         magazine.Count - beforeAll,
-                        $"LoadAmmo step {step} failed: {loadOp.Error}");
+                        $"LoadStack step {step} failed: {loadError ?? "unknown error"}");
                 }
 
-                loadOp.Value.RaiseEvents(controller, CommandStatus.Begin);
-                loadOp.Value.RaiseEvents(controller, CommandStatus.Succeed);
+                loadOp.RaiseEvents(controller, CommandStatus.Begin);
+                loadOp.RaiseEvents(controller, CommandStatus.Succeed);
 
-                if (magazine.Count <= beforeStep)
+                if (moved <= 0 || magazine.Count - beforeStep != moved)
                 {
                     return new DirectLoadResult(
                         requested,
                         available,
                         magazine.Count - beforeAll,
-                        $"LoadAmmo step {step} emitted events but magazine count stayed at {magazine.Count}");
+                        $"LoadStack step {step} expected {moved} rounds but magazine changed by {magazine.Count - beforeStep}");
                 }
 
                 step++;
+                remainingTake -= moved;
             }
         }
 
         return new DirectLoadResult(requested, available, magazine.Count - beforeAll, null);
+    }
+
+    /// <summary>
+    /// 单次批量装填（采纳社区维护包设计）：同型（模板 + 已使用态一致）顶部弹堆可合时
+    /// Merge（整堆）/ TransferExact（分段），否则整堆 Move（**不产生新 ID**）/ SplitExact 分段。
+    /// 与游戏自身 ApplySingleItemToAddress 使用同一批原生原语；本地执行（不走操作通道）。
+    /// </summary>
+    private static IItemOperationResult? LoadStack(
+        InventoryController controller,
+        Magazine magazine,
+        Ammo pile,
+        int count,
+        IDatabaseIdGenerator idGenerator,
+        out string? error,
+        out int moved)
+    {
+        moved = count;
+        error = null;
+
+        var top = magazine.Cartridges.Last as Ammo;
+        if (top != null && top.TemplateId == pile.TemplateId && top.IsUsed == pile.IsUsed)
+        {
+            var mergeCount = Math.Min(count, Math.Max(0, top.StackMaxSize - top.StackObjectsCount));
+            if (mergeCount > 0)
+            {
+                // 与 ApplySingleItemToAddress 同批原语，但按整堆数量转移。
+                if (mergeCount == pile.StackObjectsCount)
+                {
+                    var merge = ItemManipulator.Merge(pile, top, controller, simulate: false);
+                    if (merge.Succeeded)
+                    {
+                        moved = mergeCount;
+                        return merge.Value;
+                    }
+                }
+                else
+                {
+                    var transfer = ItemManipulator.TransferExact(pile, mergeCount, top, controller, simulate: false);
+                    if (transfer.Succeeded)
+                    {
+                        moved = mergeCount;
+                        return transfer.Value;
+                    }
+                }
+
+                // 原生合并/转移失败会自动回滚；保留与原版一致的 add 回退路径。
+            }
+        }
+
+        var address = magazine.Cartridges.CreateItemAddress();
+        if (count == pile.StackObjectsCount)
+        {
+            var move = ItemManipulator.Move(pile, address, controller);
+            if (move.Succeeded)
+            {
+                return move.Value;
+            }
+
+            error = move.Error?.ToString();
+            return null;
+        }
+
+        var split = ItemManipulator.SplitExact(pile, count, address, controller, idGenerator, simulate: false);
+        if (split.Succeeded)
+        {
+            return split.Value;
+        }
+
+        error = split.Error?.ToString();
+        return null;
     }
 
     /// <summary>
@@ -241,11 +311,12 @@ internal static class AmmoCommit
 
                 if (found.Failed)
                 {
-                    foreach (var done in moved)
+                    // 回滚必须后进先出：正序回滚会把弹堆顺序打乱（影响击发顺序——社区维护包复现 4,5,6 → 4,6,5）。
+                    for (var i = moved.Count - 1; i >= 0; i--)
                     {
                         try
                         {
-                            done.RollBack();
+                            moved[i].RollBack();
                         }
                         catch
                         {
@@ -400,14 +471,13 @@ internal static class AmmoCommit
                 return;
             }
 
-            // 与原版 PopTo 等价（PopTo 内部即 SplitExact(item, 1, to)），但生成器可注入以强制 ID 对齐。
-            var split = ItemManipulator.SplitExact(
+            // 与原版 PopTo 等价（内部同批原语），但生成器可注入以强制 ID 对齐；
+            // ApplySingleItemToAddress 自动处理"顶部仅 1 发无法 Split"的边界（走 Move）。
+            var split = ItemManipulator.ApplySingleItemToAddress(
                 top,
-                1,
-                chamber.CreateItemAddress(),
-                controller,
                 idGenerator ?? controller,
-                simulate: false);
+                controller,
+                chamber.CreateItemAddress());
             if (split.Failed)
             {
                 SoftcoreReloadPatch.Dbg($"chamber round failed: {split.Error}");

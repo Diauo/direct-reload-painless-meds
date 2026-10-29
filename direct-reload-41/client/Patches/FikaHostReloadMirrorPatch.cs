@@ -78,19 +78,19 @@ internal class FikaHostReloadMirrorPatch : ModulePatch
 
             Plugin.Log.LogInfo($"[DirectReload] host mirror armed: mag={magazine.Id}, weapon={weapon.Id}");
 
-            // 解析该玩家的弹药选择（客户端在换弹开始前已发来；缺失 → Auto + 警告）
+            // 解析该玩家的待定选择票据：没有票据 = 不是本 mod 的直装换弹（原版换弹）→ 不镜像
             var ownerId = controller.ID;
-            AmmoSelectionSnapshot selection;
-            if (!FikaAmmoSelectionBridge.TryGetForMirror(ownerId, out selection))
+            if (!FikaAmmoSelectionBridge.TryGetForMirror(ownerId, out var selection, out var ticket)
+                || ticket == null)
             {
-                FikaAmmoSelectionBridge.WarnMissingForMirror(ownerId);
-                selection = AmmoSelectionSnapshot.Auto;
+                SoftcoreReloadPatch.Dbg($"host mirror skipped: no pending selection ticket (owner={ownerId})");
+                return;
             }
 
             Plugin.Log.LogInfo(
-                $"[DirectReload] host mirror selection: " +
+                $"[DirectReload] host mirror armed (ticket={ticket}): selection=" +
                 $"{(selection.Mode == AmmoSelectionMode.Explicit ? selection.TemplateId : "auto")}");
-            Plugin.Instance.ScheduleMirrorCommit(controller, weapon, magazine, selection);
+            Plugin.Instance.ScheduleMirrorCommit(controller, weapon, magazine, selection, ticket);
         }
         catch (Exception ex)
         {

@@ -26,6 +26,9 @@ internal static class FikaAmmoSelectionBridge
 
     private static readonly Dictionary<string, StoredSelection> _store = new();
 
+    /// <summary>每换弹票据（选择与提交 ID 绑定，隔离重叠换弹）。</summary>
+    internal static readonly ReloadTickets Tickets = new();
+
     private static bool _resolutionDone;
     private static Type? _managerInterfaceType;
     private static PropertyInfo? _singletonInstanceProp;
@@ -35,7 +38,6 @@ internal static class FikaAmmoSelectionBridge
     private static object? _registeredManager;
     private static bool _registerWarned;
     private static bool _sendWarned;
-    private static bool _missingStoredWarned;
 
     /// <summary>Fika 管理器接口类型（无 Fika → null）。</summary>
     internal static bool FikaPresent
@@ -154,6 +156,9 @@ internal static class FikaAmmoSelectionBridge
                 return;
             }
 
+            // 开票：本次换弹的选择与随后的提交 ID 共用同一票据键（并发换弹互不混淆）
+            ownerId = Tickets.BeginLocal(ownerId);
+
             SetProperty(packetType, packet, "OwnerId", ownerId);
             SetProperty(packetType, packet, "TemplateId", selection.TemplateId ?? string.Empty);
             SetProperty(packetType, packet, "IsAuto", selection.Mode == AmmoSelectionMode.Auto);
@@ -175,8 +180,8 @@ internal static class FikaAmmoSelectionBridge
         }
     }
 
-    /// <summary>客户端侧：提交完成后发送本次新建物品 ID 清单（逗号分隔；宿主镜像强制对齐用）。</summary>
-    internal static void SendIds(string ownerId, string idsCsv)
+    /// <summary>客户端侧：提交完成后发送本次新建物品 ID 清单（版本化信封；空清单也发——整堆移动不产生新 ID）。</summary>
+    internal static void SendIds(string ownerId, IReadOnlyList<string> ids)
     {
         try
         {
@@ -186,7 +191,7 @@ internal static class FikaAmmoSelectionBridge
                 return; // 无 Fika：单机无需发送
             }
 
-            if (string.IsNullOrEmpty(ownerId) || string.IsNullOrEmpty(idsCsv))
+            if (string.IsNullOrEmpty(ownerId))
             {
                 return;
             }
@@ -195,6 +200,12 @@ internal static class FikaAmmoSelectionBridge
             if (isClient != true)
             {
                 return; // 仅客户端发送
+            }
+
+            if (!Tickets.TakeLocal(ownerId, out var ticket))
+            {
+                WarnOnce(ref _sendWarned, "commit has no matching local reload ticket; not sent");
+                return;
             }
 
             var packetType = FikaPacketEmitter.PacketType;
@@ -216,10 +227,10 @@ internal static class FikaAmmoSelectionBridge
                 return;
             }
 
-            SetProperty(packetType, packet, "OwnerId", ownerId);
+            SetProperty(packetType, packet, "OwnerId", ticket);
             SetProperty(packetType, packet, "TemplateId", string.Empty);
             SetProperty(packetType, packet, "IsAuto", true);
-            SetProperty(packetType, packet, "Ids", idsCsv);
+            SetProperty(packetType, packet, "Ids", CommitIds.Encode(ids));
 
             var deliveryType = FikaPacketEmitter.FindType("Fika.Core.Networking.LiteNetLib.DeliveryMethod");
             var reliableOrdered = deliveryType != null ? Enum.Parse(deliveryType, "ReliableOrdered") : null;
@@ -277,26 +288,55 @@ internal static class FikaAmmoSelectionBridge
         return false;
     }
 
-    /// <summary>宿主镜像侧：取该玩家的选择；返回 false = 未命中（调用方回退 Auto + 警告）。</summary>
-    internal static bool TryGetForMirror(string ownerId, out AmmoSelectionSnapshot snapshot)
+    /// <summary>
+    /// 宿主镜像侧：从该玩家最近的待定选择开票；返回 false = 没有待定选择票据
+    /// （不是本 mod 的直装换弹——原版换弹 / 选择未到达）→ 调用方应完全跳过镜像（绝不幽灵提交）。
+    /// </summary>
+    internal static bool TryGetForMirror(string ownerId, out AmmoSelectionSnapshot snapshot, out string? ticket)
     {
         snapshot = AmmoSelectionSnapshot.Auto;
+        ticket = null;
         try
         {
-            if (!string.IsNullOrEmpty(ownerId) && _store.TryGetValue(ownerId, out var stored))
+            if (string.IsNullOrEmpty(ownerId) || !Tickets.PrepareSchedule(ownerId, out var key))
+            {
+                return false;
+            }
+
+            ticket = key;
+            if (_store.TryGetValue(key, out var stored) && stored != null)
             {
                 snapshot = stored.IsAuto
                     ? AmmoSelectionSnapshot.Auto
                     : new AmmoSelectionSnapshot(AmmoSelectionMode.Explicit, stored.TemplateId);
-                return true;
             }
+
+            return true;
+        }
+        catch
+        {
+            if (ticket != null)
+            {
+                Tickets.Finish(ticket);
+                ticket = null;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>宿主镜像收尾：票据完成 + 清理存储（镜像协程 finally 调用）。</summary>
+    internal static void FinishMirror(string ticket)
+    {
+        try
+        {
+            Tickets.Finish(ticket);
+            _store.Remove(ticket);
         }
         catch
         {
             // ignore
         }
-
-        return false;
     }
 
     /// <summary>战局边界清空（AmmoSelectionState.ResetAll 调用）。</summary>
@@ -305,24 +345,12 @@ internal static class FikaAmmoSelectionBridge
         try
         {
             _store.Clear();
-            _missingStoredWarned = false;
+            Tickets.Clear();
         }
         catch
         {
             // ignore
         }
-    }
-
-    internal static void WarnMissingForMirror(string ownerId)
-    {
-        if (_missingStoredWarned)
-        {
-            return;
-        }
-
-        _missingStoredWarned = true;
-        Plugin.Log.LogWarning(
-            $"[DirectReload] ammo selection missing for mirror (owner={ownerId}) — falling back to auto (possible divergence)");
     }
 
     // ── 内部 ────────────────────────────────────────────────
@@ -333,30 +361,39 @@ internal static class FikaAmmoSelectionBridge
         {
             if (packet is IRzAmmoSelectionPacket selection)
             {
-                var ownerId = selection.OwnerId ?? string.Empty;
-                if (ownerId.Length == 0)
+                var key = selection.OwnerId ?? string.Empty;
+                if (key.Length == 0)
                 {
                     return;
                 }
 
-                if (!_store.TryGetValue(ownerId, out var stored) || stored == null)
-                {
-                    stored = new StoredSelection();
-                    _store[ownerId] = stored;
-                }
-
                 if (string.IsNullOrEmpty(selection.Ids))
                 {
-                    // 选择消息
-                    stored.TemplateId = selection.TemplateId;
-                    stored.IsAuto = selection.IsAuto;
-                    SoftcoreReloadPatch.Dbg($"selection packet received: owner={ownerId}, template={selection.TemplateId}, auto={selection.IsAuto}");
+                    // 选择消息（owner 字段 = 票据键）：新选择顶替孤儿选择（旧票据未排定镜像则清理）
+                    var orphan = Tickets.ReceiveSelection(key);
+                    if (orphan != null && !Tickets.IsScheduled(orphan))
+                    {
+                        _store.Remove(orphan);
+                    }
+
+                    _store[key] = new StoredSelection
+                    {
+                        TemplateId = selection.TemplateId,
+                        IsAuto = selection.IsAuto,
+                    };
+                    SoftcoreReloadPatch.Dbg($"selection packet received: key={key}, template={selection.TemplateId}, auto={selection.IsAuto}");
                 }
                 else
                 {
-                    // ID 对齐消息（勿覆盖选择字段）
+                    // 提交 ID 信封（勿覆盖选择字段）
+                    if (!_store.TryGetValue(key, out var stored) || stored == null)
+                    {
+                        stored = new StoredSelection();
+                        _store[key] = stored;
+                    }
+
                     stored.IdsCsv = selection.Ids;
-                    SoftcoreReloadPatch.Dbg($"ids packet received: owner={ownerId}, ids={selection.Ids.Split(',').Length}");
+                    SoftcoreReloadPatch.Dbg($"commit ids received: key={key}, payload={selection.Ids}");
                 }
             }
         }

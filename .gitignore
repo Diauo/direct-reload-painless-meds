@@ -5,3 +5,9 @@ obj/
 *.user
 *.suo
 libs/
+
+# internal working docs / build caches (never published)
+.dotnet-cli-home/
+.nuget-cache/
+ROUND-AW1-*
+round-aw1-*

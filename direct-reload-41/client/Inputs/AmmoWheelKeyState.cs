@@ -104,6 +104,28 @@ internal static class AmmoWheelKeyState
             return false;
         }
 
+        if (!Plugin.DebugLog.Value)
+        {
+            // 性能路径：debug 关闭时不构建诊断字符串（每帧零分配）
+            detail = string.Empty;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                try
+                {
+                    if (Input.GetKey(candidates[i]))
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+
+            return false;
+        }
+
         var samples = new List<string>();
         bool held = false;
         for (int i = 0; i < candidates.Count; i++)

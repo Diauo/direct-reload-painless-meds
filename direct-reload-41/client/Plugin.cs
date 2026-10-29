@@ -35,7 +35,7 @@ public class Plugin : BaseUnityPlugin
 {
     public const string PluginGuid = "com.rz99.directreload.client";
     public const string PluginName = "Direct Reload & Painless Meds";
-    public const string PluginVersion = "1.3.3";
+    public const string PluginVersion = "1.4.0";
 
     internal static Plugin Instance = null!;
 
@@ -68,6 +68,9 @@ public class Plugin : BaseUnityPlugin
     // ── Batch surgery ─────────────────────────────────────
     /// <summary>Enable "batch surgery": one use treats ALL blacked-out limbs.</summary>
     public static ConfigEntry<bool> EnableBatchSurgery = null!;
+
+    /// <summary>手术在治好任何肢体之前被取消/打断时，退还游戏已扣的 1 点套件耐久。</summary>
+    public static ConfigEntry<bool> RefundSurgeryOnCancel = null!;
 
     // ── Instant magazine ops ──────────────────────────────
     /// <summary>Instant magazine load (skip the per-round timer).</summary>
@@ -177,6 +180,16 @@ public class Plugin : BaseUnityPlugin
             "\n" +
             "With a surgical kit (CMS / Surv12 / Sanitar), one use treats ALL blacked-out limbs (1 durability per limb) instead of one at a time.");
 
+        RefundSurgeryOnCancel = Config.Bind(
+            "3. 批量手术 | Batch Surgery",
+            "取消也退耐久 (Refund Durability On Cancel)",
+            false,
+            "默认关闭 = 保持原版行为。开启后：手术在「一个肢体都没治好」的情况下被移动或取消打断时，把游戏已经扣掉的 1 点套件耐久退还。\n" +
+            "注意：耐久校验（治好才扣）始终生效，与本项无关。\n" +
+            "\n" +
+            "Off (vanilla). When on, a surgery interrupted before healing any limb refunds the 1 kit durability the game already consumed. " +
+            "The restore-then-verify rule (charge only when the limb is actually healed) is always active regardless of this switch.");
+
         InstantMagLoad = Config.Bind(
             "5. 弹匣快速操作 | Instant Magazine Ops",
             "弹匣快速装弹 (Instant Magazine Load)",
@@ -233,7 +246,14 @@ public class Plugin : BaseUnityPlugin
 
         TryEnable("SoftcoreReload", () => new SoftcoreReloadPatch().Enable());
         TryEnable("MedAnimSpeed", () => new MedAnimSpeedPatch().Enable());
+        TryEnable("MedAnimatorSpeed", () => new MedAnimatorSpeedPatch().Enable());
         TryEnable("BatchSurgery", () => new BatchSurgeryPatch().Enable());
+        TryEnable("SurgicalTeardown", () =>
+        {
+            new SurgicalOperationFinishPatch().Enable();
+            new SurgicalOperationResetPatch().Enable();
+            new SurgicalOperationRemovePatch().Enable();
+        });
         TryEnable("InstantMagLoad", () => new InstantMagLoadPatch().Enable());
         TryEnable("InstantMagUnload", () => new InstantMagUnloadPatch().Enable());
         TryEnable("FovClamp", () => new FovClampPatch().Enable());
@@ -314,64 +334,72 @@ public class Plugin : BaseUnityPlugin
         }
     }
 
-    /// <summary>
-    /// 宿主端镜像提交调度：延迟到被观察玩家的换弹操作构建完成之后执行（不与操作集合相互干扰）。
-    /// </summary>
+    /// <summary>宿主端镜像提交调度（票据驱动：与客户端本次换弹的选择/提交信封一一对应）。</summary>
     internal void ScheduleMirrorCommit(
         InventoryController controller,
         Weapon weapon,
         Magazine magazine,
-        AmmoSelectionSnapshot selection)
+        AmmoSelectionSnapshot selection,
+        string ticket)
     {
-        StartCoroutine(MirrorCommitRoutine(controller, weapon, magazine, selection));
+        StartCoroutine(MirrorCommitRoutine(controller, weapon, magazine, selection, ticket));
     }
 
     private System.Collections.IEnumerator MirrorCommitRoutine(
         InventoryController controller,
         Weapon weapon,
         Magazine magazine,
-        AmmoSelectionSnapshot selection)
+        AmmoSelectionSnapshot selection,
+        string ticket)
     {
-        yield return new UnityEngine.WaitForSeconds(1.0f);
-
-        // ID 清单 = "客户端确实做了直装提交"的唯一凭据（原版换弹 / 未提交 → 无清单）。
-        // 只等清单；等到才提交（且强制对齐）；等不到就跳过 —— 绝不无对齐幽灵提交
-        // （幽灵提交会在宿主侧制造客户端不知情的弹堆 → 后续操作 "Could not find item"）。
-        var deadline = UnityEngine.Time.realtimeSinceStartup + 6f;
-        while (!FikaAmmoSelectionBridge.HasIdsForMirror(controller.ID)
-               && UnityEngine.Time.realtimeSinceStartup < deadline)
-        {
-            yield return null;
-        }
-
-        if (!FikaAmmoSelectionBridge.TakeIdsForMirror(controller.ID, out var csv) || string.IsNullOrEmpty(csv))
-        {
-            if (!_idSkipLogged)
-            {
-                _idSkipLogged = true;
-                Log.LogInfo(
-                    "[DirectReload] host mirror skipped: no client commit ids " +
-                    "(vanilla reload or lost packet) — host left untouched");
-            }
-            else
-            {
-                SoftcoreReloadPatch.Dbg("host mirror skipped (no ids)");
-            }
-
-            yield break;
-        }
-
-        var forcedIds = csv!.Split(',');
         try
         {
-            var result = AmmoCommit.CommitAfterReload(controller, magazine, weapon, "host-mirror", selection, null, forcedIds);
-            Log.LogInfo(
-                $"[DirectReload] host mirror commit done: failed={result.Failed}, " +
-                $"loaded={result.Loaded}, alignedIds={forcedIds.Length}");
+            yield return new UnityEngine.WaitForSeconds(1.0f);
+
+            // 等本票据对应的提交信封（= 客户端确实完成了直装提交）。
+            // 等到才提交（强制 ID 对齐）；等不到就跳过 —— 绝不无对齐幽灵提交。
+            var deadline = UnityEngine.Time.realtimeSinceStartup + 6f;
+            while (!FikaAmmoSelectionBridge.HasIdsForMirror(ticket)
+                   && UnityEngine.Time.realtimeSinceStartup < deadline)
+            {
+                yield return null;
+            }
+
+            if (!FikaAmmoSelectionBridge.TakeIdsForMirror(ticket, out var payload)
+                || string.IsNullOrEmpty(payload)
+                || !CommitIds.TryDecode(payload, out var committedIds))
+            {
+                if (!_idSkipLogged)
+                {
+                    _idSkipLogged = true;
+                    Log.LogInfo(
+                        "[DirectReload] host mirror skipped: no client commit envelope " +
+                        "(vanilla reload, lost message, or participant version mismatch) — host left untouched");
+                }
+                else
+                {
+                    SoftcoreReloadPatch.Dbg("host mirror skipped (no envelope)");
+                }
+
+                yield break;
+            }
+
+            try
+            {
+                var result = AmmoCommit.CommitAfterReload(
+                    controller, magazine, weapon, "host-mirror", selection, null, committedIds);
+                Log.LogInfo(
+                    $"[DirectReload] host mirror commit done: failed={result.Failed}, " +
+                    $"loaded={result.Loaded}, alignedIds={committedIds.Count}");
+            }
+            catch (Exception ex)
+            {
+                Log.LogError($"[DirectReload] Host mirror commit failed: {ex}");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            Log.LogError($"[DirectReload] Host mirror commit failed: {ex}");
+            FikaAmmoSelectionBridge.FinishMirror(ticket);
         }
     }
 

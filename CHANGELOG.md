@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0
+- **New — medical animations now really accelerate (all items):** the animation speed is driven directly through `Animator.speed` instead of the `UseTimeMultiplier` animator parameter. Splints, tourniquets, injectors and pills play through completely and finish together with the treatment — previously their animation was cut off halfway and snapped back into the "put away" pose ("unfold half way, then folds back").
+- **New — surgery skill compensation:** the game shortens surgical treatment on a blacked-out limb by `1 + Surgery skill` but only passes `1 + skill / 100` to the animation. The animation multiplier is now corrected by that ratio, so a maxed Surgery skill no longer leaves the kit closing for a second after the limb is healed.
+- **Fixed — batch surgery never charges durability for a limb that was not actually healed:** each limb is restored, then **read back** (`IsBodyPartDestroyed`); the durability point is only consumed when the limb is verified healed, and a throwing step never charges. Durability is written as an absolute value so parallel changes cannot double-charge.
+- **New — optional "refund durability on cancel" (off by default):** if a surgery is interrupted (move / cancel) before healing a single limb, the point the game already took is returned. Toggle in F12 → *Batch Surgery → Refund Durability On Cancel*.
+- **New — empty-magazine direct reload keeps the vanilla bolt-pull:** when both the chamber and the magazine are empty, one round of the selected ammo is pre-seeded into the magazine before the reload starts, so the game plans its own chambering step and the reload animation shows the bolt being worked.
+- **Fixed — overlapping reloads in Fika:** every reload now carries its own ticket through the selection / commit envelopes, so two reloads in flight can no longer mix or overwrite each other's ammo selection and created-item IDs.
+- **Fixed — host mirror completeness:** the commit envelope is sent on every successful reload, including the empty created-ID list a whole-stack transfer produces (previously that commit was not mirrored).
+
 ## 1.3.3
 - **Fixed — belt (BeltSlot) ammunition was invisible to direct loading:** the direct-load, ammo-wheel and unload queries only searched the game's default reachable slots (pockets + tactical vest). The belt added by **BeltSlot** occupies the **ArmBand** slot, so loose rounds and magazines stored on the belt could not be used. The ammo query now builds its slot list explicitly — the game's `FastAccessSlots` (so a PackNStrap-provided replacement is honoured) **plus `ArmBand`**, de-duplicated and filtered to slots that exist on the equipment — and calls `GetAcceptableItemsNonAlloc`. Applies to the client and the Fika host mirror alike.
 - No other behaviour changes; server version bumped for release consistency.

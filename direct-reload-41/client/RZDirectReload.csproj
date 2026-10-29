@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RZDirectReload</AssemblyName>
     <RootNamespace>RZDirectReload.Client</RootNamespace>
-    <Version>1.3.3</Version>
+    <Version>1.4.0</Version>
   </PropertyGroup>
 
   <!-- SPT 4.1.6 client-side references (copied from the game install E:\Games\SPT_EFT).

@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using EFT;
 using EFT.HealthSystem;
 using EFT.InventoryLogic;
 using HarmonyLib;
@@ -26,6 +27,14 @@ internal class BatchSurgeryPatch : ModulePatch
 
     private static PlayerHealthController? _controller;
     private static Meds? _kit;
+
+    // ── 手术中断判定（用于「取消退耐久」）────────────────────────
+    // 本次 arm 时的耐久；负值 = 当前没有进行中的手术。
+    private static float _armedResource = -1f;
+    // 本次操作里实际恢复成功的肢体数。
+    private static int _restoredInOp;
+    // BodyPartRestoredEvent 是否触发过（= 至少有一个肢体被治好）。
+    private static bool _triggered;
 
     protected override MethodBase GetTargetMethod()
     {
@@ -83,6 +92,9 @@ internal class BatchSurgeryPatch : ModulePatch
 
         _controller = __instance;
         _kit = medical;
+        _armedResource = medical.MedKitComponent.HpResource;
+        _restoredInOp = 0;
+        _triggered = false;
         __instance.BodyPartRestoredEvent -= OnBodyPartRestored;
         __instance.BodyPartRestoredEvent += OnBodyPartRestored;
     }
@@ -99,13 +111,16 @@ internal class BatchSurgeryPatch : ModulePatch
 
         // 摘钩：本次一次性处理所有肢体（内部恢复触发的事件不再回调，防止重入）
         controller.BodyPartRestoredEvent -= OnBodyPartRestored;
+        _triggered = true;
 
         var penalty = GetSurgeryPenalty(kit);
         var restoredCount = 0;
+        var medKit = kit.MedKitComponent;
 
         foreach (var part in HealthHelper.RealBodyParts)
         {
-            if (kit.MedKitComponent.HpResource < 2)
+            var before = medKit.HpResource;
+            if (before < 2f)
             {
                 if (Plugin.DebugLog.Value)
                 {
@@ -120,28 +135,130 @@ internal class BatchSurgeryPatch : ModulePatch
                 continue;
             }
 
+            bool ok;
             try
             {
-                if (controller.RestoreBodyPart(part, penalty))
-                {
-                    kit.MedKitComponent.HpResource -= 1;
-                    restoredCount++;
-
-                    if (Plugin.DebugLog.Value)
-                    {
-                        Plugin.Log.LogInfo($"[DirectReload] Batch surgery: restored {part}, resource left {kit.MedKitComponent.HpResource}");
-                    }
-                }
+                ok = controller.RestoreBodyPart(part, penalty);
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"[DirectReload] Batch surgery step failed: {ex}");
+                // 调用抛异常：绝不扣耐久
+                medKit.HpResource = before;
+                Plugin.Log.LogError($"[DirectReload] Batch surgery: {part} threw -> resource kept at {before}: {ex.Message}");
+                continue;
+            }
+
+            // 关键：以「回读」为准，而不是以返回值为准。
+            // 返回 true 但肢体仍是黑的（写入没落地 / 被后续逻辑覆盖）时绝不扣耐久。
+            var stillDestroyed = true;
+            try
+            {
+                stillDestroyed = controller.IsBodyPartDestroyed(part);
+            }
+            catch
+            {
+                // 回读失败按「没恢复」处理，宁可少扣也不白扣
+            }
+
+            if (ok && !stillDestroyed)
+            {
+                // 写绝对值而不是 -=1：避免别处同时改耐久时二次扣减
+                medKit.HpResource = before - 1f;
+                restoredCount++;
+                _restoredInOp++;
+                RefreshKit(medKit);
+
+                if (Plugin.DebugLog.Value)
+                {
+                    Plugin.Log.LogInfo($"[DirectReload] Batch surgery: restored {part}, resource {before} -> {medKit.HpResource}");
+                }
+            }
+            else
+            {
+                medKit.HpResource = before;
+
+                if (Plugin.DebugLog.Value)
+                {
+                    Plugin.Log.LogWarning(
+                        $"[DirectReload] Batch surgery: {part} NOT committed (ok={ok}, stillDestroyed={stillDestroyed}) -> resource kept at {before}");
+                }
             }
         }
 
         if (Plugin.DebugLog.Value)
         {
-            Plugin.Log.LogInfo($"[DirectReload] Batch surgery complete: {restoredCount} limb(s) restored");
+            Plugin.Log.LogInfo($"[DirectReload] Batch surgery complete: {restoredCount} limb(s) restored, resource left {medKit.HpResource}");
+        }
+    }
+
+    /// <summary>
+    /// 操作收尾（正常完成 / 取消 / 移除）：若本次 arm 过、却一个肢体都没治好而耐久已经掉了
+    /// （= 被移动或取消打断），按配置退还游戏扣掉的那 1 点。默认关闭 = 原版行为。
+    /// </summary>
+    internal static void OnOperationTeardown(string reason)
+    {
+        try
+        {
+            if (_armedResource < 0)
+            {
+                return; // 没有进行中的批量手术
+            }
+
+            var medKit = _kit?.MedKitComponent;
+            if (medKit == null)
+            {
+                return;
+            }
+
+            var now = medKit.HpResource;
+            var healed = _triggered && _restoredInOp > 0;
+            var charged = now < _armedResource;
+            var refunded = false;
+
+            if (!healed && charged && Plugin.RefundSurgeryOnCancel.Value)
+            {
+                medKit.HpResource = now + 1f;
+                RefreshKit(medKit);
+                refunded = true;
+            }
+
+            if (Plugin.DebugLog.Value)
+            {
+                Plugin.Log.LogInfo(
+                    $"[DirectReload] Batch surgery teardown: reason={reason}, armed={_armedResource}, restored={_restoredInOp}, " +
+                    $"resourceNow={now}, healed={healed}, charged={charged}, refunded={refunded}");
+            }
+
+            if (refunded)
+            {
+                Plugin.Log.LogInfo("[DirectReload] Batch surgery cancelled before healing — 1 durability refunded");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Plugin.DebugLog.Value)
+            {
+                Plugin.Log.LogWarning($"[DirectReload] Batch surgery teardown failed: {ex.Message}");
+            }
+        }
+        finally
+        {
+            _armedResource = -1;
+            _restoredInOp = 0;
+            _triggered = false;
+        }
+    }
+
+    /// <summary>耐久变动后让库存 UI 立即刷新（否则数字要等下一次打开面板才更新）。</summary>
+    private static void RefreshKit(MedKitComponent medKit)
+    {
+        try
+        {
+            medKit.Item?.RaiseRefreshEvent();
+        }
+        catch
+        {
+            // UI 刷新失败不影响手术本身
         }
     }
 
@@ -183,4 +300,50 @@ internal class BatchSurgeryPatch : ModulePatch
 
         return false;
     }
+}
+
+/// <summary>
+/// 手术操作的收尾钩子定位：Finish（正常完成）、Reset（操作复用）、Remove（被移除）。
+/// 只用于判定「本次手术是否被取消」，主体逻辑在 <see cref="BatchSurgeryPatch.OnOperationTeardown"/>。
+/// </summary>
+internal static class SurgicalTeardown
+{
+    internal static MethodBase Target(string methodName)
+    {
+        var operationType = typeof(Player.MedsController).GetNestedType(
+            "MedsInHandsOperation", BindingFlags.Public | BindingFlags.NonPublic);
+
+        if (operationType == null)
+        {
+            throw new InvalidOperationException("[DirectReload] MedsInHandsOperation not found — game version mismatch?");
+        }
+
+        return AccessTools.Method(operationType, methodName)
+               ?? throw new InvalidOperationException(
+                   $"[DirectReload] MedsInHandsOperation.{methodName} not found — game version mismatch?");
+    }
+}
+
+internal class SurgicalOperationFinishPatch : ModulePatch
+{
+    protected override MethodBase GetTargetMethod() => SurgicalTeardown.Target("Finish");
+
+    [PatchPrefix]
+    private static void Prefix() => BatchSurgeryPatch.OnOperationTeardown("finish");
+}
+
+internal class SurgicalOperationResetPatch : ModulePatch
+{
+    protected override MethodBase GetTargetMethod() => SurgicalTeardown.Target("Reset");
+
+    [PatchPrefix]
+    private static void Prefix() => BatchSurgeryPatch.OnOperationTeardown("reset");
+}
+
+internal class SurgicalOperationRemovePatch : ModulePatch
+{
+    protected override MethodBase GetTargetMethod() => SurgicalTeardown.Target("Remove");
+
+    [PatchPrefix]
+    private static void Prefix() => BatchSurgeryPatch.OnOperationTeardown("remove");
 }

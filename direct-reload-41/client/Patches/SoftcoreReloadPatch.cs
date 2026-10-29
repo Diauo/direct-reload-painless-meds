@@ -44,12 +44,15 @@ internal class SoftcoreReloadPatch : ModulePatch
         return _targetMethod;
     }
 
+    private static bool _cantRemoveResolved;
+    private static MethodInfo? _cantRemoveGetter;
+
     /// <summary>
     /// 直装适用性判定（与游戏自身的战局内移动规则同一把尺，ItemManipulator.MovePathCheck）：
     ///   ① 武器必须是外置弹匣类（ExternalMagazine / EXWIRS）；
     ///   ② 弹匣所在槽位不是"关键部件"（Required）——内置管仓（Marlin M1894 等）在战局内不可拆；
     ///   ③ 弹匣本体可战局内拆卸（RaidModdable）——转轮（RSH-12 等）不可；
-    ///   ④ 无"战局内禁止从槽位移除"组件。
+    ///   ④ 无"战局内禁止从槽位移除"组件（反射解析一次后缓存——每换弹调用零反射开销）。
     /// 不适用 → 保持原版逐发装填（绝不执行直装的"弹匣拆装舞蹈"）。
     /// </summary>
     internal static bool IsDirectLoadCapable(Weapon weapon)
@@ -83,25 +86,40 @@ internal class SoftcoreReloadPatch : ModulePatch
                 return false;
             }
 
-            // ④ 战局内禁止从槽位移除的组件（运行时反射检查——该组件类型位于拆分程序集，编译期不引用）
-            try
+            // ④ 战局内禁止从槽位移除的组件（运行时反射检查——该组件类型位于拆分程序集，编译期不引用；
+            //    解析一次后缓存，避免每次换弹都做类型扫描）
+            if (!_cantRemoveResolved)
             {
-                var componentType = AccessTools.TypeByName("EFT.InventoryLogic.CantRemoveFromSlotsDuringRaidComponent");
-                var getter = typeof(Item)
-                    .GetMethods()
-                    .FirstOrDefault(m => m.Name == "GetItemComponent" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
-                if (componentType != null && getter != null)
+                _cantRemoveResolved = true;
+                try
                 {
-                    var result = getter.MakeGenericMethod(componentType).Invoke(magazine, null);
-                    if (result != null)
+                    var componentType = AccessTools.TypeByName("EFT.InventoryLogic.CantRemoveFromSlotsDuringRaidComponent");
+                    var getter = typeof(Item)
+                        .GetMethods()
+                        .FirstOrDefault(m => m.Name == "GetItemComponent" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+                    _cantRemoveGetter = componentType != null && getter != null
+                        ? getter.MakeGenericMethod(componentType)
+                        : null;
+                }
+                catch
+                {
+                    _cantRemoveGetter = null;
+                }
+            }
+
+            if (_cantRemoveGetter != null)
+            {
+                try
+                {
+                    if (_cantRemoveGetter.Invoke(magazine, null) != null)
                     {
                         return false;
                     }
                 }
-            }
-            catch
-            {
-                // 反射失败按"无组件"处理（保守方向：不因反射问题误伤直装；①②③仍完整生效）
+                catch
+                {
+                    // 反射失败按"无组件"处理（保守方向：不因反射问题误伤直装）
+                }
             }
 
             return true;
@@ -298,6 +316,15 @@ internal class SoftcoreReloadPatch : ModulePatch
                 Dbg($"selection send failed: {sex.Message}");
             }
 
+            // 空仓 + 空匣的直装：原版换弹准备阶段只在"新弹匣有弹"时才规划上膛操作
+            // （ReloadExternalMagResult.PopNewAmmoResult）——否则换弹动画没有拉机柄段。
+            // 我们的直装复用同一弹匣，动画开始时它是空的，原版便不会规划上膛；
+            // 因此在开始动画前先向弹匣顶部预置 1 发（选中弹药），让原版自己完成上膛与拉机柄动画。
+            if (weapon.ChamberAmmoCount == 0 && magazine.Count == 0)
+            {
+                PreloadSingleRoundForChamber(controller, magazine, capturedSelection, piles);
+            }
+
             Dbg($"calling ReloadMag (mag={magazine.Count}/{magazine.MaxCount})");
 
             // 4.1 观察系统：同一弹匣在事务内二次移动（枪 → 暂存格 → 枪）时，
@@ -353,6 +380,47 @@ internal class SoftcoreReloadPatch : ModulePatch
         }
     }
 
+    /// <summary>
+    /// 空仓空匣直装前预置 1 发到弹匣顶部（选中弹药）：让原版换弹准备阶段规划"上膛"操作，
+    /// 换弹动画因此自带拉机柄段；该发会在动画中由游戏自己上膛（随后我们的提交补满弹匣）。
+    /// 失败静默（最多退化为无拉机柄动画，不影响装填本身）。
+    /// </summary>
+    private static void PreloadSingleRoundForChamber(
+        InventoryController controller,
+        Magazine magazine,
+        AmmoSelectionSnapshot selection,
+        List<Ammo> piles)
+    {
+        try
+        {
+            var ordered = AmmoCommit.OrderPiles(piles, selection);
+            var pile = ordered.FirstOrDefault(a => a != null && a.StackObjectsCount > 0 && a.CurrentAddress != null);
+            if (pile == null)
+            {
+                return;
+            }
+
+            var load = ItemManipulator.ApplySingleItemToAddress(
+                pile,
+                controller,
+                controller,
+                magazine.Cartridges.CreateItemAddress());
+            if (load.Failed)
+            {
+                Dbg($"preload chamber round failed: {load.Error}");
+                return;
+            }
+
+            load.Value.RaiseEvents(controller, CommandStatus.Begin);
+            load.Value.RaiseEvents(controller, CommandStatus.Succeed);
+            Dbg($"preloaded 1 round for chamber animation (template={pile.TemplateId})");
+        }
+        catch (Exception ex)
+        {
+            Dbg($"preload chamber round error: {ex.Message}");
+        }
+    }
+
     /// <summary>转发原版（tap 后仍须交原版的情况：如无弹药 → 原版备用弹匣流程）。</summary>
     internal static void ForwardToVanilla(FirearmHandsInputTranslator instance, Weapon weapon, bool quickReload)
     {
@@ -401,11 +469,12 @@ internal class SoftcoreReloadPatch : ModulePatch
             {
                 NotifyReloadFailure("Direct load after the animation failed", "动画完成后的装填失败", result.Error);
             }
-            else if (createdIds.Count > 0)
+            else
             {
+                // 每次成功提交都必须通知宿主：版本化信封；整堆移动可能零新 ID——空清单也要发。
                 try
                 {
-                    FikaAmmoSelectionBridge.SendIds(controller.ID, string.Join(",", createdIds));
+                    FikaAmmoSelectionBridge.SendIds(controller.ID, createdIds);
                 }
                 catch (Exception sex)
                 {

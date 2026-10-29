@@ -1,16 +1,17 @@
 using System;
 using System.Reflection;
-using EFT.Animations;
 using HarmonyLib;
 using SPT.Reflection.Patching;
 
 namespace RZDirectReload.Client.Patches;
 
 /// <summary>
-/// 医疗动画加速同步（SPT 4.1）：补丁 FirearmsAnimator.SetUseTimeMultiplier(float)，
-/// 把医疗/手术动画速度乘以配置倍率（= 1 / 服务端 medUseTime multiplier）。
-/// 只有医疗代码调用该方法，全局乘系数是安全的。
-/// 4.1 该类型与方法均为真名，直接强类型目标。
+/// 诊断用（只观察，不改值）：记录游戏自己写进 FirearmsAnimator.SetUseTimeMultiplier 的原始倍率。
+///
+/// 4.1 起动画加速改由 MedAnimatorSpeedPatch 直接写 Animator.speed —— 该参数在夹板 / 注射器
+/// 等预制体上不生效（游戏写入前有 HasParameter 检查，缺参数就静默 return），这也是
+/// 「效果先到期、动画被切在展开一半」的根因。此处若继续乘倍率，手术包会与 Animator.speed
+/// 叠加成双重加速，因此只保留日志。
 /// </summary>
 internal class MedAnimSpeedPatch : ModulePatch
 {
@@ -26,20 +27,20 @@ internal class MedAnimSpeedPatch : ModulePatch
     }
 
     [PatchPrefix]
-    private static void Prefix(ref float speed)
+    private static void Prefix(float speed)
     {
-        if (!Plugin.EnableMedAnimSync.Value)
+        if (!Plugin.DebugLog.Value || !Plugin.EnableMedAnimSync.Value)
         {
             return;
         }
 
         try
         {
-            speed *= Plugin.MedAnimSpeedScale.Value;
+            Plugin.Log.LogInfo($"[DirectReload] MedAnim: SetUseTimeMultiplier(game) = {speed:0.000} (pass-through)");
         }
-        catch (Exception ex)
+        catch
         {
-            Plugin.Log.LogError($"[DirectReload] MedAnimSpeed prefix failed: {ex}");
+            // 诊断日志失败不影响游戏
         }
     }
 }
